@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>柳树沟村 · 数字村落</title>
+<link rel="stylesheet" href="./css/style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/": "./vendor/"
+  }
+}
+</script>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<div id="hud">
+  <header id="topbar">
+    <div class="brand">
+      <h1 id="villageName">—</h1>
+      <p id="villageSub">—</p>
+    </div>
+    <div id="stats"></div>
+    <div class="meta">
+      <span id="seasonTag">—</span>
+      <span id="fps" class="mono">— FPS</span>
+    </div>
+  </header>
+
+  <div id="timebar">
+    <button id="playBtn" class="ghost-btn">暂停</button>
+    <div class="tb-track">
+      <input id="timeRange" type="range" min="0" max="35040" value="0" step="1" />
+      <div class="tb-marks"><i>1月</i><i>4月</i><i>7月</i><i>10月</i><i>12月</i></div>
+    </div>
+    <div class="tb-read">
+      <b id="timeDate">2025-01-01</b>
+      <span id="timeWx">—</span>
+    </div>
+    <div id="speedCtl" title="时间流速：一天相当于现实中的时长">
+      <em>一天</em>
+      <button data-speed="0">6分</button>
+      <button data-speed="1" class="on">3分</button>
+      <button data-speed="2">1分</button>
+      <button data-speed="3">20秒</button>
+    </div>
+  </div>
+
+  <div id="hint">—</div>
+
+  <div id="modebar">
+    <button class="mode-btn on" data-mode="orbit">上帝视角</button>
+    <button class="mode-btn" data-mode="walk">第一人称</button>
+    <button id="btnReset" class="ghost-btn">复位</button>
+  </div>
+
+  <div id="joystick">
+    <div class="joy-base"></div>
+    <div id="joy-knob"></div>
+  </div>
+
+  <div id="crosshair"></div>
+</div>
+
+<aside id="card"></aside>
+
+<div id="loader">
+  <div class="loader-inner">
+    <div class="ring"></div>
+    <p id="loaderText">正在载入…</p>
+  </div>
+</div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

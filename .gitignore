@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 构建产物（由 tools/build-standalone.mjs 生成，Release 里提供）
+柳树沟村.html
+dist/
+*.zip
+
+# 开发过程截图
+preview-*.png
+
+# 文档中间产物
+docs/*.html
+
+# 系统与编辑器
+.DS_Store
+.vscode/
+.idea/
+*.log
