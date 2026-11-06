@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "构建单文件版",
+      "type": "shell",
+      "command": "node tools/build-standalone.mjs",
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "本地打包（不发布）",
+      "type": "shell",
+      "command": "./tools/package.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "发布新版本",
+      "type": "shell",
+      "command": "./tools/release.sh ${input:version} \"${input:message}\"",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "version",
+      "type": "promptString",
+      "description": "版本号（例如 1.1）",
+      "default": "1.1"
+    },
+    {
+      "id": "message",
+      "type": "promptString",
+      "description": "这一版做了什么（一句话）"
+    }
+  ]
+}
