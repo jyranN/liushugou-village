@@ -8,7 +8,7 @@ ROOT=$(pwd)
 VERSION=$(cat VERSION | tr -d ' \n')
 DIST="$ROOT/dist"
 PKG="$DIST/柳树沟村-项目包-$VERSION"
-ZIP="$DIST/柳树沟村-项目包-$VERSION.zip"
+ZIP="$DIST/Liushugou-Village-$VERSION.zip"
 
 echo "== 构建单文件版"
 node tools/build-standalone.mjs

@@ -45,7 +45,7 @@ echo "== 5/6 打标签"
 git tag -a "v$VERSION" -m "$MSG"
 
 echo "== 6/6 推送"
-ZIP="dist/柳树沟村-项目包-$VERSION.zip"
+ZIP="dist/Liushugou-Village-$VERSION.zip"
 if ! git remote get-url origin >/dev/null 2>&1; then
   echo "还没有配置远程仓库，已在本机完成提交与 tag。"
   echo
