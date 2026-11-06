@@ -79,6 +79,8 @@ docs/        四份项目文档（Word + Markdown 源稿）
 
 脚本会：更新 `VERSION` → 追加 `CHANGELOG.md` → 构建单文件版与交付 zip → 提交 → 打 tag → 推送 → （装了 `gh` 时）创建 Release 并上传 zip。
 
+第一次把仓库发布到 GitHub、以及不装命令行工具时的发布流程，见 [发布指南](docs/发布指南.md)。
+
 只打包不发布：
 
 ```bash
