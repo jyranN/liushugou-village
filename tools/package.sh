@@ -69,10 +69,13 @@ PY
 }
 
 echo "== 0/5 安全预检"
-[ -f "docs/软著/evidence/conversation-data.json" ] && \
-  echo "  · 敏感文件存在，已排除：docs/软著/evidence/conversation-data.json"
-[ -f "docs/软著/evidence/.gitignore" ] && \
-  echo "  · evidence/.gitignore 保留在仓库内，不进任何包"
+if [ -d "docs/软著" ]; then
+  echo "  · 检测到 docs/软著（非交付材料），全量包将排除 evidence/"
+  [ -f "docs/软著/evidence/conversation-data.json" ] && \
+    echo "  · 敏感文件存在，已排除：docs/软著/evidence/conversation-data.json"
+else
+  echo "  · 工程内无软著材料（已移出至项目归档，不随包分发）"
+fi
 BAD=$(find . -path ./node_modules -prune -o -path ./.git -prune -o -path ./dist -prune -o \
       -type f -size +50M -print 2>/dev/null | grep -v conversation-data || true)
 if [ -n "$BAD" ]; then echo "  ✗ 存在大于 50 MB 的文件：$BAD"; exit 1; fi
@@ -106,10 +109,12 @@ cp README.md CHANGELOG.md VERSION LICENSE THIRD_PARTY_NOTICES.md PROVENANCE.md \
 cp preview-0*.png "$FULL/"
 for d in js css data assets vendor tools research .vscode; do cp -R "$d" "$FULL/"; done
 mkdir -p "$FULL/docs"
-# 复制 docs 全部内容，但排除软著/evidence（对话原文，永不进包）
+# 复制 docs 全部内容；软著材料默认已移出工程，若临时放回则排除 evidence/（对话原文永不进包）
 (cd docs && find . -mindepth 1 -maxdepth 1 ! -name '软著' -exec cp -R {} "$FULL/docs/" \;)
-mkdir -p "$FULL/docs/软著"
-(cd docs/软著 && find . -mindepth 1 -maxdepth 1 ! -name 'evidence' -exec cp -R {} "$FULL/docs/软著/" \;)
+if [ -d "docs/软著" ]; then
+  mkdir -p "$FULL/docs/软著"
+  (cd docs/软著 && find . -mindepth 1 -maxdepth 1 ! -name 'evidence' -exec cp -R {} "$FULL/docs/软著/" \;)
+fi
 find "$FULL" -name '.DS_Store' -delete
 manifest "$FULL" "柳树沟村-$VERSION-完整工程（全量包）"
 

@@ -76,11 +76,13 @@ data/        岷县 2025 逐小时气象（8760 条）
 assets/      HDRI 与 PBR 扫描贴图
 vendor/      three.js r160 及后处理
 tools/       构建、打包、发布、截图与自检脚本
-docs/        四份项目文档（Word + Markdown 源稿）、效果图
-docs/软著/   软件著作权登记材料（操作步骤 / 源代码 / 说明书 / 过程记录）
+docs/        四份项目文档（Word + Markdown 源稿）、索引与发布记录
+research/    六本台账与基线测量（不随交付包分发）
 LICENSE     本项目自有代码的 MIT 许可
 THIRD_PARTY_NOTICES.md  第三方组件、素材与数据来源及许可
 ```
+
+> 软著申请材料、原始对话与施工过程稿属于登记与过程材料，已移出工程单独归档，不随任何包分发。
 
 ## 文档
 
