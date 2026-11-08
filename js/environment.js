@@ -40,14 +40,17 @@ export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6) {
   // 指数放软：太阳贴地时仍有一段明亮的金色时刻，不会刚落到 5° 就黑掉
   const sunPower = Math.pow(alt, 0.45) * 3.4 * (1 - cloudF * 0.72);
 
+  // 阴影靶点由 world.js 指定（村 + 东边的山要一起罩住），
+  // 光源位置相对靶点平移，光照方向（dir）保持不变
+  const shc = ctx.sun.userData.shadowCenter || { x: 0, z: 0 };
   const dist = 260;
   ctx.sun.position.set(
-    dir.x * dist,
+    shc.x + dir.x * dist,
     Math.max(1.5, dir.y * dist),
-    dir.z * dist
+    shc.z + dir.z * dist
   );
   ctx.sun.intensity = sunPower;
-  ctx.sun.target.position.set(0, 0, 0);
+  ctx.sun.target.position.set(shc.x, 0, shc.z);
   ctx.sun.target.updateMatrixWorld();
 
   // 色温：贴地时橙红，升高后转白。用 sinAlt 而不是分档，颜色是连续变化的
@@ -121,7 +124,9 @@ export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6) {
 
   /* ---------- 曝光 ---------- */
   // 没有自动测光，就人工补一段“眼睛适应”：日落后曝光抬上去，画面不会突然黑掉
-  const exposure = mix(0.74, 0.94, dayF) + twi * 0.22;
+  // 注意：main.js 里的 toneMappingExposure 只是初始化值，每帧会被这里覆盖，
+  // 所以「1.16 → 1.20」这 +3.4% 必须乘在这条曲线上（曲线形状不变，只整体抬一点）
+  const exposure = (mix(0.74, 0.94, dayF) + twi * 0.22) * (1.20 / 1.16);
   renderer.toneMappingExposure = exposure;
 
   /* ---------- HDRI 环境光强度 ----------

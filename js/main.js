@@ -9,10 +9,11 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { buildWorld } from './world.js';
-import { Climate, Clock, DEFAULT_SPEED } from './climate.js';
+import { Climate, Clock, DEFAULT_SPEED, findWeatherPresets } from './climate.js';
 import { Assets } from './assets.js';
 import { updateEnvironment } from './environment.js';
 import { Rig } from './controls.js';
+import { Tour } from './tour.js';
 import * as UI from './ui.js';
 import { ALL_OBJECTS } from './data.js';
 
@@ -25,12 +26,35 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance',
 });
 
-// 分辨率不再固定 2 倍：先给一个保守值，运行中按帧率自动升降
-const MAX_SCALE = Math.min(window.devicePixelRatio || 1, 1.75);
-const MIN_SCALE = 0.62;
-let renderScale = MAX_SCALE;
-// 调试：?fixedscale=1 关掉自适应，?scale=1.2 直接指定倍率
+/* ---------- 画质三档 ----------
+ * 每档决定四件事：渲染像素比、GTAO 开关、泛光开关、阴影贴图边长。
+ * 阴影边长换了必须丢掉旧贴图才会重建，见 setShadowSize()。
+ */
+const QUALITY = {
+  low:  { key: 'low',  label: '流畅', scale: 1.0,  ao: false, bloom: false, shadow: 1024 },
+  mid:  { key: 'mid',  label: '均衡', scale: 1.25, ao: false, bloom: true,  shadow: 2048 },
+  high: { key: 'high', label: '精致', scale: 1.5,  ao: true,  bloom: true,  shadow: 3072 },
+};
+const QUALITY_KEY = 'liushugou.quality';
+const readQuality = () => {
+  try { return QUALITY[localStorage.getItem(QUALITY_KEY)] ? localStorage.getItem(QUALITY_KEY) : 'mid'; }
+  catch { return 'mid'; }
+};
+
 const QS = new URLSearchParams(location.search);
+// 调试：?quality=low|mid|high 临时覆盖（不写回 localStorage）
+let qualityKey = QUALITY[QS.get('quality')] ? QS.get('quality') : readQuality();
+let quality = QUALITY[qualityKey];
+
+// 分辨率不再固定 2 倍：先给一个保守值，运行中按帧率自动升降
+// 上限跟着画质档走：2 倍屏上 1.5 的像素数是 1.0 的 2.25 倍
+let maxScale = Math.min(window.devicePixelRatio || 1, quality.scale);
+const MIN_SCALE = 0.62;
+// 档位即实值：用户选「均衡」就按 1.25 渲染，自适应不许私自降档；
+// 只有帧率崩到 20 以下（明显卡顿）时才在档位的 90% 处兜一下
+let minScale = Math.max(MIN_SCALE, maxScale * 0.9);
+let renderScale = maxScale;
+// 调试：?fixedscale=1 关掉自适应，?scale=1.2 直接指定倍率
 const FIXED_SCALE = QS.has('fixedscale') || QS.has('scale');
 if (QS.has('scale')) renderScale = Math.max(0.5, Math.min(2, Number(QS.get('scale')) || 1));
 
@@ -38,9 +62,12 @@ renderer.setPixelRatio(renderScale);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.16;
+// 1.16 → 1.20：关掉 GTAO 后暗部少了压暗，稍抬曝光把层次补回来
+renderer.toneMappingExposure = 1.20;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// PCFSoft 每个采样点要做 5 次双线性插值，PCF 只做 1 次；贴图缩到 2048 后 PCFSoft 的
+// 额外柔化几乎看不出，换成 PCF 省下的是实打实的片元开销
+renderer.shadowMap.type = THREE.PCFShadowMap;
 // 阴影只在太阳明显移动时重算，不然每帧都要把整个村子重画一遍
 renderer.shadowMap.autoUpdate = false;
 
@@ -60,19 +87,32 @@ composer.addPass(renderPass);
 
 // GTAO：屏幕空间的地面环境光遮蔽。
 // 换掉 SSAOPass 的原因：SSAO 会自己重渲染一遍场景，丢掉色调映射，整幅画面发灰。
-const gtaoPass = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
-gtaoPass.output = GTAOPass.OUTPUT.Default;
-// radius 太大会把路面两侧的草和地形当成遮挡物，在路中间压出一条假沟
-gtaoPass.updateGtaoMaterial({
-  radius: 0.19, distanceExponent: 2.0, thickness: 0.6,
-  scale: 0.9, samples: 8, distanceFallOff: 1.6, screenSpaceRadius: false,
-});
-// depthPhi 收紧：天空在深度上是最远平面，原值会让 GTAO 跨边缘采样，在天上压出一条带
-gtaoPass.updatePdMaterial({
-  lumaPhi: 10, depthPhi: 0.45, normalPhi: 1.2, radius: 3,
-  radiusExponent: 1, rings: 2, samples: 12,
-});
-if (!new URLSearchParams(location.search).has('noao')) composer.addPass(gtaoPass);
+//
+// 只有「精致」档才用它（?ao=1 可强制打开做对比）。它每帧要多跑一遍法线/深度
+// 预通道 + 一次去噪 + 一次合成（三次全屏 pass），是低端机上掉帧的头号开销；
+// 而村落这种开阔场景里真正被遮蔽的只有墙角、屋檐下几处。
+// 平时连它的渲染目标都不创建，从「精致」切走时只关 enabled，不销毁，切回来是零成本。
+let gtaoPass = null;
+function ensureGtao() {
+  if (gtaoPass) return gtaoPass;
+  gtaoPass = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+  gtaoPass.output = GTAOPass.OUTPUT.Default;
+  // radius 太大会把路面两侧的草和地形当成遮挡物，在路中间压出一条假沟
+  gtaoPass.updateGtaoMaterial({
+    radius: 0.19, distanceExponent: 2.0, thickness: 0.6,
+    scale: 0.9, samples: 8, distanceFallOff: 1.6, screenSpaceRadius: false,
+  });
+  // depthPhi 收紧：天空在深度上是最远平面，原值会让 GTAO 跨边缘采样，在天上压出一条带
+  gtaoPass.updatePdMaterial({
+    lumaPhi: 10, depthPhi: 0.45, normalPhi: 1.2, radius: 3,
+    radiusExponent: 1, rings: 2, samples: 12,
+  });
+  // 紧跟 RenderPass，顺序与原来一致：RenderPass → GTAO → Bloom → Output
+  // insertPass 内部会按当前像素比给这个 pass 分配渲染目标
+  composer.insertPass(gtaoPass, 1);
+  return gtaoPass;
+}
+const FORCE_AO = QS.get('ao') === '1';
 
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -89,6 +129,7 @@ let rig = null;
 let boxHelper = null;
 let climate = null;
 let clock = null;
+let tour = null;
 const NO_POST = new URLSearchParams(location.search).has('nopost');
 
 /* ---------- 拾取 ---------- */
@@ -161,6 +202,12 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 window.addEventListener('keydown', (e) => {
+  // 巡游中：Esc 中断，其余键全部吞掉（controls.js 也会因 locked 忽略）
+  if (tour && tour.active) {
+    if (e.code === 'Escape') tour.stop();
+    e.preventDefault();
+    return;
+  }
   if (e.code === 'Escape') {
     if (UI.isCardOpen()) { UI.hideCard(); setHighlight(null); }
     else if (rig.isWalk) { rig.exitWalk(); UI.setMode('orbit'); }
@@ -199,6 +246,43 @@ function applyRenderScale(s) {
   composer.setPixelRatio(s);
 }
 
+/* ---------- 画质档位：切换时逐项落地 ---------- */
+/** 阴影贴图边长。three 只在 shadow.map 为 null 时新建，所以换尺寸必须先丢掉旧贴图 */
+function setShadowSize(px) {
+  const sun = world && world.sun;
+  if (!sun) return;
+  const sh = sun.shadow;
+  if (sh.mapSize.x === px) return;
+  sh.mapSize.set(px, px);
+  if (sh.map) { sh.map.dispose(); sh.map = null; }
+  renderer.shadowMap.needsUpdate = true;
+}
+
+function applyQuality(key, { persist = true } = {}) {
+  qualityKey = QUALITY[key] ? key : 'mid';
+  quality = QUALITY[qualityKey];
+
+  maxScale = Math.min(window.devicePixelRatio || 1, quality.scale);
+  minScale = Math.max(MIN_SCALE, maxScale * 0.9);
+  if (!FIXED_SCALE) {
+    // 换档直接落到该档的像素比，不留在自适应过程中间值上
+    applyRenderScale(maxScale);
+  }
+
+  if (quality.ao || FORCE_AO) ensureGtao().enabled = true;
+  else if (gtaoPass) gtaoPass.enabled = false;
+
+  bloomPass.enabled = quality.bloom;
+  setShadowSize(quality.shadow);
+
+  // 换档这一两帧有卡顿（重建阴影贴图、分配后处理目标），不能让它算进帧率统计，
+  // 否则会被自适应误判成"太慢"而把像素比压到下限，且要等回到 57 FPS 才升得回来
+  perfAcc = 0; perfN = 0; perfCheck = 0; perfWarm = 0; lastScaleChange = performance.now();
+
+  if (persist) { try { localStorage.setItem(QUALITY_KEY, qualityKey); } catch { /* 隐私模式忽略 */ } }
+  UI.setQuality(qualityKey);
+}
+
 /* ---------- 窗口尺寸 ---------- */
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -224,7 +308,9 @@ function animate() {
   lastFrame = now;
   const dt = Math.min(rawDt, 0.05);
 
-  if (rig) rig.update(dt);
+  // 巡游接管相机时不跑 orbit/walk 的阻尼，结束后 rig 参数已同步，不会跳
+  if (tour && tour.active) tour.update(dt);
+  else if (rig) rig.update(dt);
   if (world) world.update();
 
   if (clock && climate) {
@@ -266,8 +352,9 @@ function animate() {
     frames = 0; fpsTime = 0;
   }
 
-  /* 自适应分辨率：帧率不足就降一点渲染倍率，富余再慢慢升回去。
-   * 比固定 2 倍像素比稳定得多，也是“缩放/走动不卡”的关键。 */
+  /* 自适应分辨率：兜底用。
+   * 画质档位是用户明确选的，正常情况下不插手——私自降档等于把画质偷走。
+   * 只有帧率崩到 20 以下（明显卡顿）才在档位的 90% 内降一点，恢复后升回档位值。 */
   perfWarm += perfDt;
   if (!FIXED_SCALE && perfWarm > 2.5) {
     perfAcc += perfDt; perfN++; perfCheck += perfDt;
@@ -276,11 +363,11 @@ function animate() {
       perfAcc = 0; perfN = 0; perfCheck = 0;
       const t = performance.now();
       if (!document.hidden && t - lastScaleChange > 1000) {
-        if (avg < 45 && renderScale > MIN_SCALE) {
-          applyRenderScale(Math.max(MIN_SCALE, renderScale - 0.14));
+        if (avg < 20 && renderScale > minScale + 0.001) {
+          applyRenderScale(Math.max(minScale, renderScale - 0.12));
           lastScaleChange = t;
-        } else if (avg > 57 && renderScale < MAX_SCALE - 0.01) {
-          applyRenderScale(Math.min(MAX_SCALE, renderScale + 0.07));
+        } else if (avg > 45 && renderScale < maxScale - 0.01) {
+          applyRenderScale(Math.min(maxScale, renderScale + 0.07));
           lastScaleChange = t;
         }
       }
@@ -302,7 +389,8 @@ async function boot() {
     }
 
     world = buildWorld(scene, Assets);
-    rig = new Rig(camera, canvas, world.heightAt);
+    // 落脚高度用 walkHeightAt：与 heightAt 一致，额外把桥面算进去
+    rig = new Rig(camera, canvas, world.walkHeightAt);
     // 开场从稍高处缓降下来，第一帧就在正确位置，不会先跳一下
     rig.radius = 300;
     rig.radiusGoal = 190;
@@ -317,11 +405,39 @@ async function boot() {
     clock.setSpeed(qp.has('speed') ? Number(qp.get('speed')) : DEFAULT_SPEED);
     if (qp.get('pause') === '1') { clock.playing = false; clock._rate = 0; }
 
-    // 首帧必须把阴影烘出来
+    // 首帧必须把阴影烘出来（贴图尺寸由画质档决定，等 world 建好后才能设）
+    applyQuality(qualityKey, { persist: false });
     renderer.shadowMap.needsUpdate = true;
 
     UI.bindJoystick(rig);
     UI.bindTimebar(clock);
+    UI.bindQuality((k) => applyQuality(k));
+    UI.bindWxPresets(findWeatherPresets(climate), (p) => {
+      // 直接跳到实测时刻并停住，否则时间条一走就离开那一刻了
+      clock.hour = p.index;
+      clock.playing = false;
+      clock._rate = 0;
+      UI.syncPlayBtn(clock);
+    });
+    tour = new Tour({
+      camera, rig, world,
+      layer: document.getElementById('tourLayer'),
+      caption: document.getElementById('tourCaption'),
+      onState: (on) => {
+        const b = document.getElementById('tourBtn');
+        b.classList.toggle('on', on);
+        b.textContent = on ? '结束巡游' : '巡游';
+        if (on) UI.hideCard();
+      },
+    });
+    document.getElementById('tourBtn').addEventListener('click', () => {
+      if (!tour) return;
+      if (tour.active) { tour.stop(); return; }
+      // 与第一人称互斥：先退出来再巡游
+      if (rig.isWalk) { rig.exitWalk(); UI.setMode('orbit'); }
+      tour.start();
+    });
+
     UI.setMode('orbit');
     animate();
 
@@ -341,8 +457,20 @@ async function boot() {
 
     UI.hideLoader();
 
-    window.__app = { world, rig, scene, camera, renderer, UI, objectById, climate, clock,
-      getRenderScale: () => renderScale, applyRenderScale,
+    window.__app = { world, rig, scene, camera, renderer, UI, objectById, climate, clock, tour,
+      getRenderScale: () => renderScale, applyRenderScale, applyQuality,
+      // 画质档位的真实运行态（自证/排查用）
+      getQuality: () => ({
+        key: qualityKey,
+        label: quality.label,
+        目标像素比: quality.scale,
+        实际像素比: +renderer.getPixelRatio().toFixed(3),
+        自适应上限: +maxScale.toFixed(3),
+        GTAO: !!gtaoPass && gtaoPass.enabled,
+        泛光: bloomPass.enabled,
+        阴影贴图声明: world.sun.shadow.mapSize.x,
+        阴影贴图实体: world.sun.shadow.map ? world.sun.shadow.map.width : null,
+      }),
       getPerf: () => ({ warm: +perfWarm.toFixed(2), check: +perfCheck.toFixed(2), n: perfN, acc: +perfAcc.toFixed(2), scale: renderScale }) };
 
     if (new URLSearchParams(location.search).has('qa')) {

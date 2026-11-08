@@ -8,7 +8,7 @@
  */
 
 import * as THREE from 'three';
-import { HOUSES, TREES, FACILITIES } from './data.js';
+import { HOUSES, TREES, FACILITIES, STONES, MILLSTONE, CISTERNS } from './data.js';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -21,6 +21,12 @@ const OBSTACLES = [
   ...TREES.map((t) => ({ x: t.pos[0], z: t.pos[2], r: Math.max(0.35, t.dbh / 220) })),
   ...FACILITIES.filter((f) => ['committee', 'barn', 'mill'].includes(f.kind))
     .map((f) => ({ x: f.pos[0], z: f.pos[2], r: 7 })),
+  // 山腰上的山神庙：不在 data.js 里，手工补一个，免得能穿墙
+  { x: 140, z: 20, r: 4.2 },
+  // 村口石墩、石碾与水窖：矮，但人不该从中间穿过去
+  ...STONES.map((s) => ({ x: s.pos[0], z: s.pos[1], r: 0.10 })),
+  { x: MILLSTONE.pos[0], z: MILLSTONE.pos[1], r: 0.80 },
+  ...CISTERNS.map((c) => ({ x: c.pos[0], z: c.pos[1], r: 0.40 })),
 ];
 
 export class Rig {
@@ -52,6 +58,7 @@ export class Rig {
     this.keys = new Set();
     this.joy = { x: 0, y: 0, active: false };
     this.dragging = false;
+    this.locked = false;          // 自动巡游期间接管相机，屏蔽一切输入
     this.last = { x: 0, y: 0 };
     this.moved = 0;
 
@@ -67,6 +74,7 @@ export class Rig {
     el.addEventListener('contextmenu', (e) => e.preventDefault());
 
     el.addEventListener('pointerdown', (e) => {
+      if (this.locked) return;
       this.dragging = true;
       this.moved = 0;
       this.last.x = e.clientX;
@@ -75,7 +83,7 @@ export class Rig {
     });
 
     el.addEventListener('pointermove', (e) => {
-      if (!this.dragging) return;
+      if (this.locked || !this.dragging) return;
       const dx = e.clientX - this.last.x;
       const dy = e.clientY - this.last.y;
       this.last.x = e.clientX;
@@ -96,6 +104,7 @@ export class Rig {
     el.addEventListener('pointercancel', up);
 
     el.addEventListener('wheel', (e) => {
+      if (this.locked) return;
       e.preventDefault();
       if (this.mode !== 'orbit') return;
       // 行/页模式换算成像素；触控板一次只有几个像素，不会突然拉近半条街
@@ -105,6 +114,7 @@ export class Rig {
     }, { passive: false });
 
     window.addEventListener('keydown', (e) => {
+      if (this.locked) return;
       this.keys.add(e.code);
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
     });
@@ -120,7 +130,7 @@ export class Rig {
     const t = this.target;
     this.walk.set(t.x, 0, t.z + 14);
     this.walk.x += 0.01;
-    this.yaw = Math.atan2(t.x - this.walk.x, t.z - this.walk.z) + Math.PI;
+    this.yaw = Math.atan2(t.x - this.walk.x, t.z - this.walk.z);
     this.pitch = -0.05;
     this.vel.set(0, 0);
     this.mode = 'walk';
@@ -206,9 +216,12 @@ export class Rig {
     const spd = this.speed * (sprint ? 2.1 : 1);
 
     // 以朝向为基准的移动
+    // 水平前向量 F = (sin yaw, 0, cos yaw)
+    // 右向量 R = F × 世界上向量(0,1,0) = (-cos yaw, 0, sin yaw)
+    // 位移 = R * ix + F * (-iz)，iz 为负代表前进
     const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
-    const wx = ix * cos - iz * sin;
-    const wz = -ix * sin - iz * cos;
+    const wx = -ix * cos - iz * sin;
+    const wz = ix * sin - iz * cos;
 
     const targetVx = wx * spd;
     const targetVz = wz * spd;
@@ -232,9 +245,9 @@ export class Rig {
       }
     }
 
-    // 限制在村子范围内
-    nx = clamp(nx, -128, 128);
-    nz = clamp(nz, -128, 128);
+    // 限制在村子与东山范围内（地形 620m 见方，别走出网格）
+    nx = clamp(nx, -240, 240);
+    nz = clamp(nz, -240, 240);
 
     this.walk.x = nx;
     this.walk.z = nz;

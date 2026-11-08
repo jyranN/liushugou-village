@@ -199,3 +199,81 @@ export class Clock {
     return a.time.slice(0, 10);
   }
 }
+
+/* ---------- 天气预设 ----------
+ * 四个时刻全部从当年 8760 条逐小时实测记录里现算，不写死日期。
+ * 换一份数据文件，这四条会自动落到新数据里对应的极值时刻上。
+ */
+export function findWeatherPresets(climate) {
+  const h = climate.hourly;
+  const n = climate.n;
+  const hourOf = (i) => Number(h.time[i].slice(11, 13));
+  const monthOf = (i) => Number(h.time[i].slice(5, 7));
+  const isSummer = (i) => { const m = monthOf(i); return m >= 6 && m <= 8; };
+
+  /* 晴：云量 <10%、无降水、白天 9–16 点。
+   * 这种时刻一年有几百个，规则里要求"优先取夏季"，夏季里再取最热的一刻，
+   * 得到的是盛夏正午前后的通透天，比随便挑一个初春晴天更有代表性。 */
+  let sunny = -1;
+  for (let i = 0; i < n; i++) {
+    const hod = hourOf(i);
+    if (hod < 9 || hod > 16) continue;
+    if ((h.cloud_cover[i] ?? 100) >= 10) continue;
+    if ((h.precipitation[i] ?? 0) > 0) continue;
+    if ((h.snowfall[i] ?? 0) > 0) continue;
+    if (sunny < 0) { sunny = i; continue; }
+    const si = isSummer(i), sb = isSummer(sunny);
+    if (si !== sb) { if (si) sunny = i; continue; }
+    if ((h.temperature_2m[i] ?? -99) > (h.temperature_2m[sunny] ?? -99)) sunny = i;
+  }
+
+  /* 阴：云量 >85%、无降水无降雪。
+   * 云量 100% 的时刻一年有两千多个，光按最大值取会落到 1 月 1 日凌晨，
+   * 所以同级里再按"夏季优先 → 云量更高 → 更接近 13 点"排一次序。 */
+  let overcast = -1;
+  for (let i = 0; i < n; i++) {
+    if ((h.cloud_cover[i] ?? 0) <= 85) continue;
+    if ((h.precipitation[i] ?? 0) > 0) continue;
+    if ((h.snowfall[i] ?? 0) > 0) continue;
+    if (overcast < 0) { overcast = i; continue; }
+    const a = [isSummer(i) ? 1 : 0, h.cloud_cover[i] ?? 0, -Math.abs(hourOf(i) - 13)];
+    const b = [isSummer(overcast) ? 1 : 0, h.cloud_cover[overcast] ?? 0, -Math.abs(hourOf(overcast) - 13)];
+    const better = a[0] !== b[0] ? a[0] > b[0]
+      : a[1] !== b[1] ? a[1] > b[1]
+      : a[2] > b[2];
+    if (better) overcast = i;
+  }
+
+  /* 雨：全年降水量最大的那一小时（不做任何时段/季节修饰） */
+  let rainiest = 0;
+  for (let i = 1; i < n; i++) {
+    if ((h.precipitation[i] ?? 0) > (h.precipitation[rainiest] ?? 0)) rainiest = i;
+  }
+
+  /* 雪：有降雪且气温 <0℃，取雪量最大的一刻 */
+  let snowiest = -1;
+  for (let i = 0; i < n; i++) {
+    if ((h.snowfall[i] ?? 0) <= 0) continue;
+    if ((h.temperature_2m[i] ?? 0) >= 0) continue;
+    if (snowiest < 0 || (h.snowfall[i] ?? 0) > (h.snowfall[snowiest] ?? 0)) snowiest = i;
+  }
+
+  const pack = (key, label, i, basis) => ({
+    key, label, index: i,
+    date: i >= 0 ? h.time[i].slice(0, 10) : '—',
+    clock: i >= 0 ? h.time[i].slice(11, 16) : '—',
+    temp: i >= 0 ? (h.temperature_2m[i] ?? 0) : 0,
+    cloud: i >= 0 ? (h.cloud_cover[i] ?? 0) : 0,
+    precip: i >= 0 ? (h.precipitation[i] ?? 0) : 0,
+    snow: i >= 0 ? (h.snowfall[i] ?? 0) : 0,
+    code: i >= 0 ? (h.weather_code[i] ?? 0) : 0,
+    basis,
+  });
+
+  return [
+    pack('sunny', '晴', sunny, '云量<10%、无降水、9–16 点，夏季最热'),
+    pack('overcast', '阴', overcast, '云量>85%、无降水，夏季正午前后'),
+    pack('rain', '雨', rainiest, '全年降水量最大的一小时'),
+    pack('snow', '雪', snowiest, '有降雪且气温<0℃，雪量最大'),
+  ].filter((p) => p.index >= 0);
+}

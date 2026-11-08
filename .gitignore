@@ -12,6 +12,10 @@ preview-*.png
 # 文档中间产物
 docs/*.html
 
+# 内部工作稿：过程证据（含原始对话）与六本台账，只留在本机与全量包，不进公开仓库
+docs/软著/
+research/
+
 # 系统与编辑器
 .DS_Store
 .idea/

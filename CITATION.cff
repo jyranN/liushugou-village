@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "柳树沟村三维气象可视化系统"
+version: "1.1"
+date-released: "2026-11-08"
+authors:
+  - name: "jyranN"
+url: "https://github.com/jyranN/liushugou-village"
+repository-code: "https://github.com/jyranN/liushugou-village"
+license: MIT
+abstract: "甘肃定西岷县风格的三维虚拟村庄，由岷县 2025 年 8760 小时真实气象记录驱动；含时间轴、第一人称、档案卡、自动巡游与单文件离线交付。"
+keywords:
+  - three.js
+  - digital village
+  - weather visualization
+  - WebGL

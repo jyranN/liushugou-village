@@ -32,6 +32,31 @@ export const ROAD = {
   ],
 };
 
+/* ---------------- 村西小河 ----------------
+ * 近南北走向，端点严格落在 (-105,-130) → (-98,130)。中段用两个不同频率的正弦
+ * 叠加做轻微摆动，外面乘 sin²(πt)：摆动在两端归零、导数也为 0，
+ * 所以端点位置精确，接进/接出村子时不会出现折角，也不会笔直得像水渠。
+ * 河槽半宽 half=6m 处回到岸顶，out=9m 之外完全是原地形；
+ * 河床是恒定标高 -2.2m（沿河 5 点数值一致），常水位 -0.6m。
+ */
+export const RIVER = {
+  x0: -105, z0: -130, x1: -98, z1: 130,
+  half: 6,        // 到岸顶的半宽，m
+  out: 9,         // 河谷影响半宽，之外完全是原地形，m
+  depth: 2.2,     // 河床比两岸低，m
+  water: 1.6,     // 水位比河床高，m
+};
+RIVER.bedY = -RIVER.depth;
+RIVER.waterY = RIVER.bedY + RIVER.water;
+
+/** 给定 z，返回河道中心线的 x（河道近南北，横向距离直接用 |x-cx(z)| 足够准） */
+export function riverCenterX(z) {
+  const t = Math.min(1, Math.max(0, (z - RIVER.z0) / (RIVER.z1 - RIVER.z0)));
+  const env = Math.sin(Math.PI * t) ** 2;
+  const wob = (3.4 * Math.sin(z * 0.019 + 0.7) + 1.5 * Math.sin(z * 0.047 - 0.4)) * env;
+  return RIVER.x0 + (RIVER.x1 - RIVER.x0) * t + wob;
+}
+
 /* ---------------- 民居 ---------------- */
 const SURNAME = ['张', '李', '王', '刘', '赵', '陈', '杨', '马'];
 const STRUCT = ['砖木', '土木', '砖混'];
@@ -130,12 +155,23 @@ for (const h of HOUSES) {
 
 /* 村外成片林带 */
 for (let i = 0; i < 44; i++) {
-  const x = between(-118, 118);
+  let x = between(-118, 118);
   const z = between(-124, 124);
   if (Math.abs(x) < 14) continue;
   if (Math.abs(x) < 36 && Math.abs(z) < 92) continue;
+  // 河道避让：随机撒点原本有两棵树正落在河心和岸坡上，树根会泡进水里。
+  // 只把 x 推到东岸以外，不额外消耗随机数，后面的布局与既有编号全部保持不变。
+  const c = riverCenterX(z), safe = RIVER.out + 3;
+  if (Math.abs(x - c) < safe) x = c + safe + (x - (c - safe)) * 0.22;
   addTree(x, z);
 }
+
+/* 山神庙旁边的老槐：树龄比庙前的台阶还长，村里人说建庙前就有它 */
+addTree(147, 28, {
+  species: SPECIES[3], height: 12.6, canopy: 6.6, dbh: 52,
+  name: '庙前老槐',
+  note: '长在庙东侧的坡上，树冠搭着庙檐；树干朝下坡一侧歪，是常年被山风吹的',
+});
 
 /* ---------------- 家畜 ---------------- */
 const ANIMALS = [];
@@ -189,8 +225,8 @@ export const FACILITIES = [
     use: '晾晒药材与粮食', status: '在用', note: '秋收后晒当归、党参' },
 
   { id: 'F-05', type: 'facility', kind: 'mill', name: '水磨坊',
-    pos: [-62, 0, 62], built: 1965, area: 48, structure: '土木',
-    use: '粮食加工（已停用）', status: '闲置', note: '水轮残缺，仅存石磨' },
+    pos: [-88, 0, 62], built: 1965, area: 48, structure: '土木',
+    use: '粮食加工（已停用）', status: '闲置', note: '临河西岸，水轮残缺，仅存石磨' },
 
   { id: 'F-06', type: 'facility', kind: 'plaza', name: '村口广场',
     pos: [2, 0, -92], built: 2019, area: 560, structure: '水泥',
@@ -221,17 +257,21 @@ export const FACILITIES = [
     use: '政策宣传、药材收购信息', status: '在用', note: '每月更新一次，秋收季张贴药材收购价' },
 ];
 
-/* ---------------- 地块 ---------------- */
+/* ---------------- 地块 ----------------
+ * 河西四块地原先都压进新开的河谷里。田面是刚性平面（按中心高度摆放），
+ * 河谷一挖就会有几米悬空，所以西缘统一东缩到岸顶以东：
+ * L-01 / L-09 是落位检查查出来的，L-06「河滩地」是本次点名要改的，
+ * L-07 只擦到过渡带（下切已归零），保持不动。 */
 export const FIELDS = [
-  { id: 'L-01', type: 'field', name: '东坡梯田', crop: '当归', area: 62, pos: [-78, 0, -52], size: [54, 40], rot: 0.12, stage: '已采收', note: '10 月下旬采挖完毕，正在回茬' },
+  { id: 'L-01', type: 'field', name: '东坡梯田', crop: '当归', area: 62, pos: [-70, 0, -52], size: [42, 40], rot: 0.12, stage: '已采收', note: '10 月下旬采挖完毕，正在回茬' },
   { id: 'L-02', type: 'field', name: '南川地', crop: '党参', area: 48, pos: [-64, 0, 34], size: [46, 34], rot: -0.06, stage: '根膨大末期', note: '预计 11 月中旬采挖' },
   { id: 'L-03', type: 'field', name: '西梁地', crop: '黄芪', area: 55, pos: [66, 0, -52], size: [50, 38], rot: -0.18, stage: '已采收', note: '旱作雨养，产量略低' },
   { id: 'L-04', type: 'field', name: '北湾地', crop: '柴胡', area: 34, pos: [70, 0, 66], size: [40, 30], rot: 0.2, stage: '越冬准备', note: '二年生，明年秋采' },
   { id: 'L-05', type: 'field', name: '门前菜地', crop: '蔬菜', area: 8, pos: [-16, 0, 78], size: [22, 16], rot: 0.05, stage: '收尾', note: '各家自种，白菜萝卜为主' },
-  { id: 'L-06', type: 'field', name: '河滩地', crop: '马铃薯', area: 26, pos: [-86, 0, 96], size: [32, 24], rot: -0.1, stage: '已收', note: '沙壤土，薯形好' },
+  { id: 'L-06', type: 'field', name: '河滩地', crop: '马铃薯', area: 26, pos: [-76, 0, 96], size: [20, 24], rot: -0.1, stage: '已收', note: '东岸沙壤土，薯形好' },
   { id: 'L-07', type: 'field', name: '下川地', crop: '当归', area: 41, pos: [-78, 0, -92], size: [36, 28], rot: 0.08, stage: '已采收', note: '村南主产田' },
   { id: 'L-08', type: 'field', name: '东塬地', crop: '黄芪', area: 52, pos: [52, 0, -92], size: [42, 30], rot: -0.14, stage: '已采收', note: '坡地，排水好' },
-  { id: 'L-09', type: 'field', name: '西沟地', crop: '马铃薯', area: 33, pos: [-74, 0, -8], size: [38, 34], rot: 0.16, stage: '已收', note: '二年轮作，防土传病害' },
+  { id: 'L-09', type: 'field', name: '西沟地', crop: '马铃薯', area: 33, pos: [-66, 0, -8], size: [32, 34], rot: 0.16, stage: '已收', note: '二年轮作，防土传病害' },
   { id: 'L-10', type: 'field', name: '中腰地', crop: '当归', area: 37, pos: [52, 0, 12], size: [34, 28], rot: -0.05, stage: '已采收', note: '水浇条件好' },
   { id: 'L-11', type: 'field', name: '陈家湾', crop: '党参', area: 44, pos: [-52, 0, 62], size: [40, 32], rot: 0.1, stage: '根膨大末期', note: '11 月中旬采挖' },
   { id: 'L-12', type: 'field', name: '北坡地', crop: '柴胡', area: 29, pos: [30, 0, 92], size: [36, 26], rot: 0.22, stage: '越冬准备', note: '阴坡，墒情好' },
@@ -300,9 +340,76 @@ addYard(12, 'cart', '陈家架子车', [5.6, 1.0], {
   note: '长期空置户，车胎已瘪',
 });
 
+/* ---------------- 村口树下：石墩、石碾 ----------------
+ * 村口老杨树 (-7.5,-104)、老槐 (8.2,-101) 的档案里写着「树下有石墩，夏天村人乘凉」
+ * 和「树下曾挂铁钟」，这次把石墩与石碾补进场景。石墩位置按树冠投影下 2.2~2.9m
+ * 摆成不规则一圈，避开东侧主路；每只坐高、歪斜、磨损都不同，档案逐只记。
+ */
+export const STONES = [
+  { id: 'D-01', type: 'stone', name: '村口石墩 · 一', pos: [-7.77, -101.46],
+    radius: 0.32, seatHeight: 0.46, rotY: 0.35,
+    era: '清末', craft: '整石凿制，八棱，坐面微凹',
+    original: 8, remain: 5, condition: '座面磨得发亮，棱角尚全', owner: '村集体',
+    note: '清末凿制，原有一套八只，围着老杨树摆一圈。现存五只，另外三只 1958 年修渠时挪去垫桥，后来没找回来。' },
+
+  { id: 'D-02', type: 'stone', name: '村口石墩 · 二', pos: [-9.87, -102.52],
+    radius: 0.30, seatHeight: 0.42, rotY: 1.85,
+    era: '清末', craft: '整石凿制，八棱，坐面微凹',
+    original: 8, remain: 5, condition: '西侧崩了一角，用水泥补过', owner: '村集体',
+    note: '比旁边几只矮半指，老人说原来就是给娃娃坐的。崩角是 1974 年拖拉机倒车撞的，补的水泥已经磨圆。' },
+
+  { id: 'D-03', type: 'stone', name: '村口石墩 · 三', pos: [-9.76, -104.96],
+    radius: 0.34, seatHeight: 0.50, rotY: 0.95,
+    era: '清末', craft: '整石凿制，八棱，坐面微凹',
+    original: 8, remain: 5, condition: '最高的一只，底下垫了半块青砖', owner: '村集体',
+    note: '五只里最高的一只，坐着要踮脚。树根把地面顶得不平，底下垫了半块青砖找平，砖已经陷进土里。' },
+
+  { id: 'D-04', type: 'stone', name: '村口石墩 · 四', pos: [-8.05, -106.59],
+    radius: 0.31, seatHeight: 0.44, rotY: 2.60,
+    era: '清末', craft: '整石凿制，八棱，坐面微凹',
+    original: 8, remain: 5, condition: '北面凿痕清晰，坐面有一道细裂纹', owner: '村集体',
+    note: '北面朝着河风，凿痕没被衣裳磨掉，还看得清錾子走过的路子。坐面那道裂纹是冻裂的，不影响坐。' },
+
+  { id: 'D-05', type: 'stone', name: '村口石墩 · 五', pos: [-5.53, -105.28],
+    radius: 0.33, seatHeight: 0.48, rotY: 4.10,
+    era: '清末', craft: '整石凿制，八棱，坐面微凹',
+    original: 8, remain: 5, condition: '被挪过两次，棱线略歪', owner: '村集体',
+    note: '离主路最近的一只。修广场时挪过两回，棱线已经和另外几只对不齐；夏天傍晚坐这儿的人最多。' },
+];
+
+export const MILLSTONE = {
+  id: 'N-01', type: 'millstone', name: '村口石碾', pos: [10.45, -100.35],
+  era: '清末', disc: 2.4, roller: '直径 0.72 m，长 1.35 m', weight: 320,
+  use: '碾谷、碾药、压苇篾', condition: '碾盘边缘磨出 2~3 cm 凹槽，碾磙一端崩角',
+  owner: '村集体',
+  note: '清末凿制。1958 年大炼钢铁时，碾磙被卸下来想砸碎炼铁，村里老人拦下，只崩了一个角；木架 1976 年换过一次，2019 年又换了推杆。',
+};
+
+/* ---------------- 水窖 ----------------
+ * 陇中缺水，院里院外都有水窖：地面留一个内凹圆口，铸铁盖加锁，
+ * 旁边支简易辘轳架。三处都选在院墙外 1.9~4.4m 的空地，避开树、田与主路。
+ */
+export const CISTERNS = [
+  { id: 'W-01', type: 'cistern', name: '村南水窖', pos: [-24, -66],
+    depth: 8.6, capacity: 24, cover: '铸铁盖，加铁锁', use: '集蓄雨水，供人畜饮用',
+    condition: '在用，窖台水泥抹面', owner: '王宅（3 号）',
+    note: '窖口比院子低半尺，雨水从场院经沉淀池流进来。旱年这一窖能撑到第二年开春，窖绳磨断过两回。' },
+
+  { id: 'W-02', type: 'cistern', name: '村东水窖', pos: [26, -24],
+    depth: 7.8, capacity: 19, cover: '铸铁盖，盖沿压砖', use: '集蓄雨水，浇院中菜畦',
+    condition: '在用，窖口加过滤网', owner: '陈宅（6 号）',
+    note: '窖口加了铁丝过滤网，防树叶和麻雀掉进去。盖沿那两块砖是压风用的，刮白毛风时盖子不会响。' },
+
+  { id: 'W-03', type: 'cistern', name: '村北水窖', pos: [-24, 48],
+    depth: 9.2, capacity: 27, cover: '铸铁盖，加锁', use: '集蓄雨水，旱季备用',
+    condition: '在用，辘轳绳 2024 年换过', owner: '王宅（11 号）',
+    note: '三处里最深的一口，窖壁用红黏土捶过。辘轳绳 2024 年换成尼龙绳，木轴还是老的，转起来吱呀响。' },
+];
+
 /* ---------------- 汇总 ---------------- */
 export const ALL_OBJECTS = [
   ...HOUSES, ...TREES, ...ANIMAL_LIST, ...FACILITIES, ...FIELDS, ...YARD_DETAILS,
+  ...STONES, MILLSTONE, ...CISTERNS,
 ];
 
 export const STATS = {

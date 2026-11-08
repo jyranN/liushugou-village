@@ -81,6 +81,44 @@ const SCHEMA = {
       ['stage', '当前生育期'],
     ],
   },
+  stone: {
+    label: '石墩',
+    color: '#9aa3a0',
+    fields: [
+      ['era', '年代'],
+      ['craft', '工艺'],
+      ['seatHeight', '坐高', 'm'],
+      ['original', '原有', '只'],
+      ['remain', '现存', '只'],
+      ['condition', '保存状况'],
+      ['owner', '归属'],
+    ],
+  },
+  millstone: {
+    label: '石碾',
+    color: '#9c948a',
+    fields: [
+      ['era', '年代'],
+      ['disc', '碾盘直径', 'm'],
+      ['roller', '碾磙'],
+      ['weight', '碾磙重量', 'kg'],
+      ['use', '用途'],
+      ['condition', '保存状况'],
+      ['owner', '归属'],
+    ],
+  },
+  cistern: {
+    label: '水窖',
+    color: '#7f8c92',
+    fields: [
+      ['depth', '窖深', 'm'],
+      ['capacity', '蓄水量', 'm³'],
+      ['cover', '窖盖'],
+      ['use', '用途'],
+      ['condition', '保存状况'],
+      ['owner', '归属'],
+    ],
+  },
 };
 
 const KIND_LABEL = {
@@ -111,6 +149,9 @@ export function showCard(obj) {
     : obj.type === 'animal' ? obj.kind
     : obj.type === 'yarditem' ? (obj.category || '院落物件')
     : obj.type === 'field' ? '耕地'
+    : obj.type === 'stone' ? '村口坐具'
+    : obj.type === 'millstone' ? '粮食加工'
+    : obj.type === 'cistern' ? '雨水集蓄'
     : (obj.structure || '民居');
 
   card.style.setProperty('--accent', s.color);
@@ -234,6 +275,56 @@ export function initLoader(text) {
   el('loaderText').textContent = text;
 }
 
+/* ---------- 画质档位 ---------- */
+let onQualityPick = null;
+
+export function bindQuality(fn) {
+  onQualityPick = fn;
+  document.querySelectorAll('#qualityBar button').forEach((b) => {
+    b.addEventListener('click', () => { if (onQualityPick) onQualityPick(b.dataset.q); });
+  });
+}
+
+export function setQuality(key) {
+  document.querySelectorAll('#qualityBar button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.q === key);
+  });
+}
+
+/* ---------- 天气预设 ---------- */
+let wxPresets = [];
+let activeWx = null;
+
+export function bindWxPresets(presets, fn) {
+  wxPresets = presets;
+  document.querySelectorAll('#wxPreset button').forEach((b) => {
+    const p = presets.find((x) => x.key === b.dataset.wx);
+    if (!p) { b.style.display = 'none'; return; }
+    // 悬停就能看到这个预设落到哪天几点、凭什么选出来的
+    b.title = `${p.label} · ${p.date} ${p.clock}\n${p.basis}\n气温 ${p.temp.toFixed(1)}℃ · 云 ${p.cloud}%`
+      + (p.precip > 0 ? ` · 降水 ${p.precip} mm` : '')
+      + (p.snow > 0 ? ` · 降雪 ${p.snow} cm` : '');
+    b.addEventListener('click', () => {
+      fn(p);
+      setWxPreset(p.key);
+    });
+  });
+}
+
+export function setWxPreset(key) {
+  activeWx = key;
+  document.querySelectorAll('#wxPreset button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.wx === key);
+  });
+}
+
+export function syncPlayBtn(clock) {
+  const play = el('playBtn');
+  if (!play) return;
+  play.textContent = clock.playing ? '暂停' : '播放';
+  barCache.play = play.textContent;
+}
+
 /* ---------- 时间轴 ---------- */
 const WX_LABEL = {
   0: '晴', 1: '少云', 2: '多云', 3: '阴',
@@ -321,6 +412,12 @@ export function updateTimebar(clock, wx, force = false) {
   const now = performance.now();
   if (!force && now - lastBarAt < 110) return;
   lastBarAt = now;
+
+  // 时间一旦离开预设时刻（拖动、播放、跨天回卷），把高亮的天气按钮取消掉
+  if (activeWx) {
+    const p = wxPresets.find((x) => x.key === activeWx);
+    if (p && Math.abs(clock.hour - p.index) > 0.5) setWxPreset(null);
+  }
 
   const range = el('timeRange');
   if (range && !clock.dragging) {
