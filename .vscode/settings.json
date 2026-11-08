@@ -3,13 +3,13 @@
   "files.eol": "\n",
   "files.exclude": {
     "dist": true,
-    "preview-*.png": true,
     "node_modules": true
   },
   "search.exclude": {
     "dist": true,
     "node_modules": true,
     "vendor": true,
+    "research": true,
     "柳树沟村.html": true
   },
   "git.autofetch": true

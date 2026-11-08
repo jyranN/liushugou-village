@@ -6,11 +6,15 @@ node_modules/
 dist/
 *.zip
 
-# 开发过程截图
-preview-*.png
-
 # 文档中间产物
 docs/*.html
+
+# 发布过程记录：构建日志、QA 实测、单轮交付流水账、预览图拍摄参数。
+# 这些是开发期的过程证据，留给本机与交付包；对外由 CHANGELOG 与 Release Notes 承担说明职责。
+docs/发布指南.md
+docs/发布验证-v*.md
+docs/v*-交付清单.md
+docs/预览图参数.md
 
 # 内部工作稿：过程证据（含原始对话）与六本台账，只留在本机与全量包，不进公开仓库
 docs/软著/

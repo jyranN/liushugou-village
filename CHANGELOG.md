@@ -28,7 +28,8 @@
 - CHANGELOG 五段式、Release Notes、`MANIFEST.txt` / `MANIFEST.sha256`、`dist/SHA256SUMS`、六本台账 v1.1 数据与 `research/baselines/v1.1/` 基线截图。
 - 交付包根目录补齐 README / CHANGELOG / VERSION / LICENSE / THIRD_PARTY_NOTICES / PROVENANCE；打包脚本改用 `mktemp -d` 组装。
 - 工程内移出非交付物：软著申请材料与原始对话（27.7 MB）、`05-施工计划` 与 `06-AI提示词手册` 两份已完成的过程稿、v1.0 旧封面图；完整工程包随之重打，交付包不受影响。
-- 离线、Chrome / Edge / Safari、无痕模式验证记录见 `docs/发布验证-v1.1.md`。
+- 离线、Chrome / Edge / Safari、无痕模式均已验证通过。
+- 公开仓库只保留项目本体：源码、素材、四份项目文档、8 张效果图与开源标配文件；构建日志、QA 实测、单轮交付流水账等过程记录不进仓库。
 
 **修复**
 - 修正第一人称 A/D 反向与进入时多转 180°（严格保留 `exitWalk` 行为）。
