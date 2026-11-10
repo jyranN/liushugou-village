@@ -21,6 +21,20 @@ const SCHEMA = {
       ['residents', '常住人口', '人'],
       ['vacant', '状态', null, (v) => (v ? '空置' : '在住')],
     ],
+    /* 住户与经营（v1.2 新增）：数值写在 data.js 的 HOUSE_CARDS 里，不是现算的，
+     * 所以能由 tools/verify-cards.mjs 按 ownerId 从场景重新聚合后逐户比对。
+     * 渲染上包一层 <details>：桌面默认展开、与上面几行同款平铺；
+     * 窄屏默认收起，点标题展开（见 css/style.css 的 @media）。 */
+    group: {
+      title: '住户与经营',
+      fields: [
+        ['head', '户主'],
+        ['farmland', '耕地', '亩'],
+        ['livestock', '牲畜（头/只）'],
+        ['cropMain', '主要作物'],
+        ['income', '年收入估算', '万元'],
+      ],
+    },
   },
   tree: {
     label: '树木',
@@ -57,6 +71,12 @@ const SCHEMA = {
       ['area', '占地面积', '㎡'],
       ['structure', '结构'],
       ['status', '状态'],
+      /* 公共核心（v1.2）：只有 F-02 村委会有这两项，其余设施字段缺失时
+       * showCard() 会自动跳过，不产生空行。43 人 / 513 亩由
+       * tools/verify-cards.mjs 从 HOUSES.residents 与 FIELDS.area 重算比对，
+       * 口径与任务 03 完全一致：人 / 亩。 */
+      ['population', '全村常住人口', '人'],
+      ['farmlandTotal', '全村耕地总面积', '亩'],
     ],
   },
   yarditem: {
@@ -79,6 +99,9 @@ const SCHEMA = {
       ['crop', '种植作物'],
       ['area', '面积', '亩'],
       ['stage', '当前生育期'],
+      // 两行运行时值：由 main.js 在打开卡片前按当前积温注入（见 liveField）
+      ['gddEff', '有效积温', '℃·d'],
+      ['gddNeed', '全生育期需积温', '℃·d'],
     ],
   },
   stone: {
@@ -119,6 +142,52 @@ const SCHEMA = {
       ['owner', '归属'],
     ],
   },
+  /* 生产性空间（v1.2 新增）：院外场院六类，7 行，字段与既有卡同款平铺 */
+  production: {
+    label: '生产性空间',
+    color: '#a98b5d',
+    fields: [
+      ['category', '类别'],
+      ['use', '用途'],
+      ['scope', '服务范围'],
+      ['size', '尺寸'],
+      ['structure', '材质'],
+      ['season', '使用时令'],
+      ['status', '状态'],
+    ],
+  },
+  /* 公共核心（v1.2 新增）：C-01 ~ C-04 四处场所，9 行，字段与既有卡同款平铺；
+   * 不设 group，窄屏无需折叠，保持原有排版风格不变。 */
+  civic: {
+    label: '公共场所',
+    color: '#b07c62',
+    fields: [
+      ['category', '场所类别'],
+      ['use', '主要用途'],
+      ['scope', '服务范围'],
+      ['size', '占地尺寸'],
+      ['built', '建成年份', '年'],
+      ['area', '占地面积', '㎡'],
+      ['structure', '结构做法'],
+      ['season', '使用时令'],
+      ['status', '状态'],
+    ],
+  },
+  flag: {
+    label: '旗帜',
+    color: '#5b7ba8',
+    fields: [
+      ['location', '位置'],
+      ['poleHeight', '杆高', 'm'],
+      ['cloth', '旗面 长×高', 'm', (v) => `${v[0].toFixed(2)} × ${v[1].toFixed(2)}`],
+      ['fabric', '旗面材质'],
+      ['color', '旗色'],
+      ['use', '用途'],
+      ['raised', '立杆年份', '年'],
+      ['owner', '管理单位'],
+      ['status', '状态'],
+    ],
+  },
 };
 
 const KIND_LABEL = {
@@ -143,6 +212,23 @@ export function showCard(obj) {
     return `<div class="row"><span class="k">${label}</span><span class="v">${v}</span></div>`;
   }).join('');
 
+  /* 分组字段：目前只有民居有。用 <details> 包起来，窄屏默认收起、桌面默认展开；
+   * 展开后的每一行与既有 .row 完全同款，不改动原有排版。 */
+  let groupHtml = '';
+  if (s.group) {
+    const gRows = s.group.fields.map(([key, label, unit, fmt]) => {
+      let v = obj[key];
+      if (v === undefined || v === null || v === '') return '';
+      if (fmt) v = fmt(v, obj);
+      else if (unit) v = `${v} ${unit}`;
+      return `<div class="row"><span class="k">${label}</span><span class="v">${v}</span></div>`;
+    }).join('');
+    // 900px 与 css 里的断点保持一致
+    const narrow = typeof matchMedia === 'function' && matchMedia('(max-width: 900px)').matches;
+    groupHtml = `<details class="card-group"${narrow ? '' : ' open'}>`
+      + `<summary>${s.group.title}</summary>${gRows}</details>`;
+  }
+
   const sub = obj.type === 'facility'
     ? (KIND_LABEL[obj.kind] || '设施')
     : obj.type === 'tree' ? obj.kind
@@ -152,6 +238,9 @@ export function showCard(obj) {
     : obj.type === 'stone' ? '村口坐具'
     : obj.type === 'millstone' ? '粮食加工'
     : obj.type === 'cistern' ? '雨水集蓄'
+    : obj.type === 'flag' ? '旗杆与旗布'
+    : obj.type === 'production' ? (obj.category || '院外场院')
+    : obj.type === 'civic' ? (obj.category || '公共场所')
     : (obj.structure || '民居');
 
   card.style.setProperty('--accent', s.color);
@@ -162,7 +251,7 @@ export function showCard(obj) {
     </div>
     <h2 class="card-title">${obj.name}</h2>
     <div class="card-id">编号 ${obj.id}</div>
-    <div class="card-body">${rows}</div>
+    <div class="card-body">${rows}${groupHtml}</div>
     ${obj.note ? `<div class="card-note">${obj.note}</div>` : ''}
   `;
 

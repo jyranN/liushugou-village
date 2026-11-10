@@ -368,6 +368,31 @@ export function stone() {
   return out;
 }
 
+/**
+ * 地形裸岩：给地形第三层用，**不要砌块网格**。
+ * stone() 是照着挡墙/台阶画的，34px 一个规则砌块 + 2px 暗缝；
+ * 铺到几十米周期的山坡上，远处会混叠成一整片棋盘格（夜间和雪天尤其明显）。
+ * 这里改成纯多尺度噪声 + 细裂隙，没有任何规则格子，色相偏灰褐。
+ */
+export function terrainRock() {
+  if (cache.has('terrainRock')) return cache.get('terrainRock');
+  const base = paint(makeCanvas(), (x, y) => {
+    const n = fbm(x / 48, y / 48, 4);        // 大块岩石斑
+    const m = fbm(x / 11, y / 11, 3);        // 碎石颗粒
+    const crack = Math.abs(fbm(x / 72 + 3, y / 72 + 7, 3) - 0.5);
+    // 裂隙：噪声过零点附近压暗，宽度很窄，避免形成可辨的网格
+    const ck = Math.max(0, 0.035 - crack) * 4.6;
+    const v = 0.58 + n * 0.32 + m * 0.14 - ck;
+    return [126 * v, 120 * v, 110 * v];
+  });
+  const out = {
+    map: tex(base, 1),
+    normalMap: tex(toNormalMap(base, 2.0), 1, false),
+  };
+  cache.set('terrainRock', out);
+  return out;
+}
+
 /** 水面法线：轻微波纹 */
 export function water() {
   if (cache.has('water')) return cache.get('water');
@@ -537,6 +562,71 @@ export function cropPlant() {
   return out;
 }
 
+/**
+ * 当归的伞形花序：细花葶 + 放射状伞辐 + 末端小白花。
+ * 128×128，透明底，与 cropPlant 同一套 alphaTest 用法。
+ * 当归是岷县道地药材，7 月抽薹开复伞形白花 —— 这是它在田里最好认的特征，
+ * 所以单独画一张，而不是拿叶片贴图凑。
+ */
+export function cropUmbel() {
+  if (cache.has('cropUmbel')) return cache.get('cropUmbel');
+  const S = 128;
+  const cv = makeCanvas(S);
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+
+  const cx = S / 2;
+  const baseY = S - 2;
+  const hubY = S * 0.44;          // 伞心高度
+
+  // 花葶：从底部微微弯向伞心
+  ctx.strokeStyle = 'rgba(116,132,82,1)';
+  ctx.lineWidth = 3.0;
+  ctx.beginPath();
+  ctx.moveTo(cx, baseY);
+  ctx.quadraticCurveTo(cx + 3.5, (baseY + hubY) / 2, cx, hubY);
+  ctx.stroke();
+
+  // 伞辐：7 根，末端略上翘
+  const n = 7;
+  const R = S * 0.36;
+  const tips = [];
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI / 2 + (i / (n - 1) - 0.5) * Math.PI * 1.18;
+    const tx = cx + Math.cos(a) * R;
+    const ty = hubY + Math.sin(a) * R * 0.70;
+    tips.push([tx, ty]);
+    ctx.strokeStyle = 'rgba(122,138,88,0.95)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(cx, hubY);
+    ctx.quadraticCurveTo((cx + tx) / 2, (hubY + ty) / 2 - 3.5, tx, ty);
+    ctx.stroke();
+  }
+
+  // 每根伞辐末端一簇小白花（5 个小瓣 + 中心一点淡黄）
+  for (const [tx, ty] of tips) {
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * Math.PI * 2 + 0.4;
+      const px = tx + Math.cos(a) * 2.8;
+      const py = ty + Math.sin(a) * 2.3;
+      ctx.fillStyle = 'rgba(240,244,230,0.95)';
+      ctx.beginPath();
+      ctx.arc(px, py, 2.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(214,226,182,0.95)';
+    ctx.beginPath();
+    ctx.arc(tx, ty, 1.9, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const out = { map: tex(cv, 1, true) };
+  out.map.wrapS = out.map.wrapT = THREE.ClampToEdgeWrapping;
+  cache.set('cropUmbel', out);
+  return out;
+}
+
 /** 村务宣传栏：中文标语 + 药材收购信息，给村口一点真实的乡土标识 */
 export function signBoard() {
   if (cache.has('signBoard')) return cache.get('signBoard');
@@ -573,5 +663,95 @@ export function signBoard() {
   t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
   const out = { map: t };
   cache.set('signBoard', out);
+  return out;
+}
+
+/**
+ * 公共核心标识图集（v1.2）：一张 1024×512 的 canvas，分 4 格，每格 512×256。
+ *   col,row = (0,0) 小卖部手写招牌 | (1,0) 卫生室红十字
+ *             (0,1) 村委会村务公示栏 | (1,1) 戏台匾额
+ * 四处标识合用这一张贴图 + 一个合批 Mesh，只占 1 个 draw call；
+ * 与 signBoard() 一样是现场画出来的，**不新增任何贴图文件**。
+ * UV 分区由 world.js 的 civicSignQuad() 按同一格序写入。
+ */
+export function civicSigns() {
+  if (cache.has('civicSigns')) return cache.get('civicSigns');
+  const cv = document.createElement('canvas');
+  cv.width = 1024; cv.height = 512;
+  const c = cv.getContext('2d');
+  const W = 512, H = 256;
+  const HAND = '"Kaiti SC", "STKaiti", "KaiTi", "楷体", serif';
+  const SANS = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
+
+  const cell = (col, row, bg) => {
+    c.save();
+    c.translate(col * W, row * H);
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+    // 日晒褪色 / 木纹斑驳：与 signBoard() 同一套做法
+    for (let i = 0; i < 900; i++) {
+      c.fillStyle = `rgba(90,75,55,${Math.random() * 0.06})`;
+      c.fillRect(Math.random() * W, Math.random() * H, 2 + Math.random() * 5, 2 + Math.random() * 4);
+    }
+  };
+  /** 手写感：逐字给一点高低错落与倾角，不做规整排版 */
+  const handText = (chars, cx, cy, size, color, tilt = 0.055) => {
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = `${size}px ${HAND}`;
+    c.fillStyle = color;
+    const step = size * 1.16;
+    const x0 = cx - (chars.length - 1) * step / 2;
+    [...chars].forEach((ch, i) => {
+      c.save();
+      c.translate(x0 + i * step, cy + Math.sin(i * 2.3) * 3);
+      c.rotate((i - (chars.length - 1) / 2) * tilt);
+      c.fillText(ch, 0, 0);
+      c.restore();
+    });
+  };
+  const smallText = (txt, cx, cy, size, color, font = SANS) => {
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = `${size}px ${font}`; c.fillStyle = color;
+    c.fillText(txt, cx, cy);
+  };
+
+  /* (0,0) 小卖部：米黄木牌 + 手写三字 */
+  cell(0, 0, '#e9dcbc');
+  c.strokeStyle = '#8a6b42'; c.lineWidth = 8; c.strokeRect(12, 12, W - 24, H - 24);
+  c.lineWidth = 2; c.strokeRect(24, 24, W - 48, H - 48);
+  handText('小卖部', 256, 108, 84, '#33291d');
+  smallText('烟 酒  ·  百 货  ·  农 资  ·  代 收 快 递', 256, 196, 23, '#6a5136');
+  c.restore();
+
+  /* (1,0) 卫生室：白底红十字 + 机构名 */
+  cell(1, 0, '#f2f0e9');
+  c.fillStyle = '#c22a24';
+  c.fillRect(74, 42, 48, 172);      // 竖
+  c.fillRect(26, 104, 144, 48);     // 横（与竖条同轴）
+  smallText('村卫生室', 336, 104, 58, '#a52a22');
+  smallText('常见病 · 防疫接种 · 慢病随访', 336, 178, 22, '#4a4a44');
+  c.restore();
+
+  /* (0,1) 村委会公示栏：红框 + 村务公开 */
+  cell(0, 1, '#eee7d7');
+  c.strokeStyle = '#9e2b20'; c.lineWidth = 9; c.strokeRect(14, 14, W - 28, H - 28);
+  c.lineWidth = 2; c.strokeRect(28, 28, W - 56, H - 56);
+  smallText('村 务 公 开', 256, 98, 66, '#a22c20');
+  smallText('药材收购价 · 低保公示 · 一事一议', 256, 166, 23, '#3c3a33');
+  smallText('柳树沟村村民委员会   每月更新', 256, 212, 21, '#6a6252');
+  c.restore();
+
+  /* (1,1) 戏台匾额：深褐木底 + 描金字 */
+  cell(1, 1, '#3b2c1e');
+  c.strokeStyle = '#d9b46a'; c.lineWidth = 10; c.strokeRect(16, 16, W - 32, H - 32);
+  c.lineWidth = 2; c.strokeRect(30, 30, W - 60, H - 60);
+  handText('同乐台', 256, 112, 80, '#e8c77a', 0.03);
+  smallText('一九九八年  全村出工共建', 256, 200, 22, '#c9ab76', HAND);
+  c.restore();
+
+  const t = tex(cv, 1, true);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  const out = { map: t };
+  cache.set('civicSigns', out);
   return out;
 }

@@ -18,6 +18,11 @@
 
 <canvas id="scene"></canvas>
 
+<!-- 同机位对比：A 帧缓存（2D canvas）+ 分割线。两者都不接指针事件，只在 body.comparing 时显形。
+     A 是抓下来的一帧位图，所以切 A/B 不触发任何渲染，也就不会有相机阻尼。 -->
+<div id="abLayer"><canvas id="abCanvas"></canvas></div>
+<div id="abDivider"></div>
+
 <div id="hud">
   <header id="topbar">
     <div class="brand">
@@ -71,11 +76,38 @@
     <button class="mode-btn" data-mode="walk">第一人称</button>
     <button id="btnReset" class="ghost-btn">复位</button>
     <button id="tourBtn" class="ghost-btn" title="自动巡游约 30 秒；Esc 或点任意处中断">巡游</button>
+    <button id="abBtn" class="ghost-btn" title="同机位 A/B 对比：把当前画面记为 A，再改时间看 B">对比</button>
+    <button id="labelBtn" class="ghost-btn" title="教学标注层：地名 / 地块编号 / 等高线（2 m 间隔）">标注</button>
+    <button id="sectionBtn" class="ghost-btn" title="河谷剖面：沿 z=−60 切线剖开地形，露出河床下切 2.2 m / 水位 −0.6 m / 水面宽 8 m；不与第一人称、巡游同时启用">剖面</button>
+    <button id="wxChartBtn" class="ghost-btn" title="岷县 2025 全年气温与降水；点 / 拖曲线跳到对应时刻">气象</button>
+  </div>
+
+  <div id="abPanel">
+    <div class="ab-head">
+      <span>A</span>
+      <input id="abSlider" type="range" min="0" max="100" value="50" step="1"
+             title="拖动改变分割位置；按住 Tab 全屏看 A" />
+      <span>B</span>
+    </div>
+    <div class="ab-foot">
+      <em id="abInfo">左 A（已缓存） · 右 B（实时）</em>
+      <button id="abRecapture" class="ghost-btn">重记 A</button>
+      <button id="abClose" class="ghost-btn">退出</button>
+    </div>
   </div>
 
   <div id="joystick">
     <div class="joy-base"></div>
     <div id="joy-knob"></div>
+  </div>
+
+  <div id="wxPanel">
+    <div class="wxp-head">
+      <em>岷县 2025 · 全年气温与降水</em>
+      <button id="wxPanelClose" class="ghost-btn">收起</button>
+    </div>
+    <canvas id="wxCanvas" title="点 / 拖曲线跳到对应时刻（15 分钟一格）"></canvas>
+    <p class="wxp-foot">逐小时实测 8760 条 · 折线 = 日均温（℃）· 柱 = 日降水（mm）· 点 / 拖跳时刻</p>
   </div>
 
   <div id="crosshair"></div>

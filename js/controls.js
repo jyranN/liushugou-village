@@ -8,7 +8,7 @@
  */
 
 import * as THREE from 'three';
-import { HOUSES, TREES, FACILITIES, STONES, MILLSTONE, CISTERNS } from './data.js';
+import { HOUSES, TREES, FACILITIES, STONES, MILLSTONE, CISTERNS, CIVIC } from './data.js';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -27,6 +27,10 @@ const OBSTACLES = [
   ...STONES.map((s) => ({ x: s.pos[0], z: s.pos[1], r: 0.10 })),
   { x: MILLSTONE.pos[0], z: MILLSTONE.pos[1], r: 0.80 },
   ...CISTERNS.map((c) => ({ x: c.pos[0], z: c.pos[1], r: 0.40 })),
+  /* 公共核心（v1.2）：C-01 ~ C-04 的占位圆 = footprint 半对角线，单位 m，
+   * 数值写在 data.js 的 radius 字段里，与 tools/verify-civic.mjs 同一口径。
+   * 四处都在 |x| = 33 ~ 40 m 的院外背街带，不吃主路走廊，也不挡巡游镜头。 */
+  ...CIVIC.map((c) => ({ x: c.pos[0], z: c.pos[2], r: c.radius })),
 ];
 
 export class Rig {

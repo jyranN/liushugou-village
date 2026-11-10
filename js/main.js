@@ -16,6 +16,9 @@ import { Rig } from './controls.js';
 import { Tour } from './tour.js';
 import * as UI from './ui.js';
 import { ALL_OBJECTS } from './data.js';
+import { routineLabel, lightLevel, herdActivity } from './schedule.js';
+import { Compare } from './compare.js';
+import { initClimateChart, updateClimateChart, climateChartRedraws } from './climate-chart.js';
 
 const canvas = document.getElementById('scene');
 
@@ -25,6 +28,7 @@ const renderer = new THREE.WebGLRenderer({
   antialias: true,
   powerPreference: 'high-performance',
 });
+renderer.localClippingEnabled = true;   // 教学剖面视图用材质级裁剪平面（挂/卸在 world.teach 内）
 
 /* ---------- 画质三档 ----------
  * 每档决定四件事：渲染像素比、GTAO 开关、泛光开关、阴影贴图边长。
@@ -36,6 +40,10 @@ const QUALITY = {
   high: { key: 'high', label: '精致', scale: 1.5,  ao: true,  bloom: true,  shadow: 3072 },
 };
 const QUALITY_KEY = 'liushugou.quality';
+/* 地形三层材质（草/土/石）的远景淡出距离，单位 m： [近, 远]
+ * 三档只改这两个数、层数不变（都是三层混合），所以三档观感一致，
+ * 只有「多远退回基础单层」不同：低画质收近一点换帧率，高画质放宽让更远处也保留细节。 */
+const TERRAIN_LOD = { low: [30, 48], mid: [36, 58], high: [44, 70] };
 const readQuality = () => {
   try { return QUALITY[localStorage.getItem(QUALITY_KEY)] ? localStorage.getItem(QUALITY_KEY) : 'mid'; }
   catch { return 'mid'; }
@@ -130,6 +138,11 @@ let boxHelper = null;
 let climate = null;
 let clock = null;
 let tour = null;
+// 同机位 A/B 对比：ab 是控制器；abBoot 是 ?ab=split 的启动状态机（1 待抓 A，2 待切 B）
+let ab = null;
+let abBoot = 0;
+let abBootAt = 0;
+let abBTimePending = 0;
 const NO_POST = new URLSearchParams(location.search).has('nopost');
 
 /* ---------- 拾取 ---------- */
@@ -174,7 +187,7 @@ canvas.addEventListener('pointerup', (e) => {
 
   const hit = pickAt(e.clientX, e.clientY);
   if (hit) {
-    UI.showCard(hit.obj);
+    UI.showCard(liveField(hit.obj));
     setHighlight(world.pickables.find((p) => p.userData.objectId === hit.id));
     if (!rig.isWalk) rig.focus(hit.hit.point, 44);
   } else {
@@ -214,7 +227,14 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyF') {
     if (rig.isWalk) { rig.exitWalk(); UI.setMode('orbit'); }
-    else { rig.enterWalk(); UI.setMode('walk'); }
+    else {
+      if (world?.teach && (world.teach.labels || world.teach.section)) {
+        world.teach.closeAll();
+        syncTeachBtns();
+        UI.setHint('已退出标注 / 剖面视图：与第一人称不兼容');
+      }
+      rig.enterWalk(); UI.setMode('walk');
+    }
   }
   // 空格：播放 / 暂停时间
   if (e.code === 'Space' && clock && !e.repeat) {
@@ -226,9 +246,62 @@ window.addEventListener('keydown', (e) => {
 document.querySelectorAll('.mode-btn').forEach((b) => {
   b.addEventListener('click', () => {
     const m = b.dataset.mode;
-    if (m === 'walk') { rig.enterWalk(); UI.setMode('walk'); }
+    if (m === 'walk') {
+      // 教学视图（剖面/标注）与第一人称互斥：进入前强制关闭并提示
+      if (world?.teach && (world.teach.labels || world.teach.section)) {
+        world.teach.closeAll();
+        syncTeachBtns();
+        UI.setHint('已退出标注 / 剖面视图：与第一人称不兼容');
+      }
+      rig.enterWalk(); UI.setMode('walk');
+    }
     else { rig.exitWalk(); UI.setMode('orbit'); }
   });
+});
+
+/* ---------- 教学视图按钮：标注 / 剖面（默认全关） ----------
+ * 剖面开启时保存 rig 机位到 teachCamSave，关闭时还原——场景完全复原。
+ * 相机机位归 main 所有，world.teach 只管裁剪 / 填充面 / 标签与等高线。 */
+let teachCamSave = null;
+function syncTeachBtns() {
+  const t = world?.teach;
+  if (!t) return;
+  document.getElementById('labelBtn')?.classList.toggle('on', t.labels);
+  document.getElementById('sectionBtn')?.classList.toggle('on', t.section);
+}
+document.getElementById('labelBtn')?.addEventListener('click', () => {
+  if (!world?.teach) return;
+  world.teach.setLabels(!world.teach.labels);
+  syncTeachBtns();
+});
+document.getElementById('sectionBtn')?.addEventListener('click', () => {
+  if (!world?.teach) return;
+  const on = !world.teach.section;
+  if (on) {
+    if (rig.isWalk) { rig.exitWalk(); UI.setMode('orbit'); }
+    if (tour?.active) { tour.stop(); }
+    teachCamSave = {
+      target: rig.target.clone(), targetGoal: rig.targetGoal.clone(),
+      radius: rig.radius, radiusGoal: rig.radiusGoal,
+      phi: rig.phi, phiGoal: rig.phiGoal, theta: rig.theta, thetaGoal: rig.thetaGoal,
+    };
+    const c = world.teach.cam;
+    rig.target.set(c.x, c.y - 0.2, c.z); rig.targetGoal.copy(rig.target);
+    rig.radius = rig.radiusGoal = 20;
+    rig.phi = rig.phiGoal = 1.35;            // 略俯视：剖切面完整入画又不被南岸遮挡
+    rig.theta = rig.thetaGoal = 0;           // 相机在 +z（南）侧，面朝切壁
+    rig.update(0.016);
+  } else if (teachCamSave) {
+    rig.target.copy(teachCamSave.target); rig.targetGoal.copy(teachCamSave.targetGoal);
+    rig.radius = teachCamSave.radius; rig.radiusGoal = teachCamSave.radiusGoal;
+    rig.phi = teachCamSave.phi; rig.phiGoal = teachCamSave.phiGoal;
+    rig.theta = teachCamSave.theta; rig.thetaGoal = teachCamSave.thetaGoal;
+    rig.update(0.016);
+    teachCamSave = null;
+  }
+  world.teach.setSection(on);
+  syncTeachBtns();
+  UI.setHint(on ? '剖面视图：已沿 z=−60 切开地形，露出河床下切 2.2 m / 水位 −0.6 m / 水面宽 8 m（Esc 退出第一人称与巡游亦会关闭）' : '');
 });
 
 document.getElementById('btnReset').addEventListener('click', () => {
@@ -258,6 +331,19 @@ function setShadowSize(px) {
   renderer.shadowMap.needsUpdate = true;
 }
 
+/**
+ * 地块卡打开前注入运行时物候。
+ * data.js 里的 stage 是静态档案文字（没有气候数据时的兜底），
+ * 这里用当前积温算出的真实状态覆盖它，并补上有效积温两行。
+ * 返回浅拷贝，不改动 FIELDS 里的原对象。
+ */
+function liveField(obj) {
+  if (!obj || obj.type !== 'field' || !world) return obj;
+  const st = world.fieldState.find((s) => s.id === obj.id);
+  if (!st) return obj;
+  return { ...obj, stage: st.stage, gddEff: Math.round(st.gddEff), gddNeed: st.gddNeed };
+}
+
 function applyQuality(key, { persist = true } = {}) {
   qualityKey = QUALITY[key] ? key : 'mid';
   quality = QUALITY[qualityKey];
@@ -274,6 +360,11 @@ function applyQuality(key, { persist = true } = {}) {
 
   bloomPass.enabled = quality.bloom;
   setShadowSize(quality.shadow);
+
+  // 地形三层混合的远景淡出距离：只改 uniform，不重建材质、不触发着色器重编译
+  const tl = TERRAIN_LOD[qualityKey] || TERRAIN_LOD.mid;
+  const tu = world?.terrainMat?.userData?.terrainUniforms;
+  if (tu) { tu.uTerrLodNear.value = tl[0]; tu.uTerrLodFar.value = tl[1]; }
 
   // 换档这一两帧有卡顿（重建阴影贴图、分配后处理目标），不能让它算进帧率统计，
   // 否则会被自适应误判成"太慢"而把像素比压到下限，且要等回到 57 FPS 才升得回来
@@ -309,16 +400,24 @@ function animate() {
   const dt = Math.min(rawDt, 0.05);
 
   // 巡游接管相机时不跑 orbit/walk 的阻尼，结束后 rig 参数已同步，不会跳
-  if (tour && tour.active) tour.update(dt);
+  // 对比模式下相机要钉死：A 是缓存位图，镜头一动 A 就不是同一机位了
+  const abLocked = !!(ab && ab.active);
+  if (abLocked) {
+    /* 有意留空：不跑 rig.update / tour.update，相机的 position 与 quaternion
+     * 保持抓 A 那一帧的值，A 与 B 的 camera.matrixWorld 逐位相同 */
+  } else if (tour && tour.active) tour.update(dt);
   else if (rig) rig.update(dt);
-  if (world) world.update();
+  // 传当前世界小时：家畜活动读作息表，与炊烟、窗灯同源；playing 决定避雨过渡要不要走
+  if (world) world.update(clock ? clock.hour : 0, climate, clock ? clock.playing : true);
 
   if (clock && climate) {
     clock.advance(dt);
-    const wx = updateEnvironment(world, climate, clock.hour, renderer, camera.position.y);
+    const wx = updateEnvironment(world, climate, clock.hour, renderer, camera.position.y, dt);
     UI.updateTimebar(clock, wx);
+    updateClimateChart(clock, wx);   // 气象面板游标：内部只在 x 像素变化时重绘
     window.__wx = wx;
-    world.updateWeather(wx, camera, dt);
+    // clock.playing 决定炊烟的时间要不要走：暂停/拖动时烟定住
+    world.updateWeather(wx, camera, dt, clock.playing);
 
     /* 阴影按需重算：太阳转过约 0.09° 才重画一次 shadow map，
      * 每秒最多 5 次。省下的是一整遍全场景深度渲染，手感差别很明显。 */
@@ -332,7 +431,7 @@ function animate() {
     }
   }
 
-  updateHover(dt);
+  if (!abLocked) updateHover(dt);
 
   if (boxHelper) boxHelper.update();
   if (NO_POST) renderer.render(scene, camera);
@@ -343,6 +442,24 @@ function animate() {
     renderer.autoClear = false;
     renderer.render(world.weatherScene, camera);
     renderer.autoClear = true;
+  }
+
+  /* 同机位对比：抓帧必须在这一帧的合成完成之后、且仍在同一个任务里，
+   * 否则 WebGL 绘制缓冲已被浏览器清空，抓到的会是空白图。 */
+  if (ab) {
+    ab.afterRender();
+    // ?ab=split 启动：先抓 A（此时时间还是 A），下一帧才切到 B，避免把 B 抓成 A。
+    // 延后 700ms 再开始：页面首帧前后浏览器可能先给一个尺寸、随后按真实视口重排，
+    // 那次 resize 会让刚开的对比立即判废（A 的位图尺寸已经对不上了）。
+    if (abBoot === 1) {
+      if (now - abBootAt > 700) { abBoot = 2; ab.enter(); }
+    } else if (abBoot === 2 && ab.ready) {
+      abBoot = 3;
+      clock.hour = abBTimePending;
+      clock.playing = false;
+      clock._rate = 0;
+      UI.syncPlayBtn(clock);
+    }
   }
 
   frames++;
@@ -356,7 +473,8 @@ function animate() {
    * 画质档位是用户明确选的，正常情况下不插手——私自降档等于把画质偷走。
    * 只有帧率崩到 20 以下（明显卡顿）才在档位的 90% 内降一点，恢复后升回档位值。 */
   perfWarm += perfDt;
-  if (!FIXED_SCALE && perfWarm > 2.5) {
+  // 对比模式下不调分辨率：A 已经按当前倍率抓好，改倍率会让左右两半清晰度不一致
+  if (!FIXED_SCALE && !abLocked && perfWarm > 2.5) {
     perfAcc += perfDt; perfN++; perfCheck += perfDt;
     if (perfCheck > 0.8) {
       const avg = perfN / perfAcc;
@@ -405,6 +523,18 @@ async function boot() {
     clock.setSpeed(qp.has('speed') ? Number(qp.get('speed')) : DEFAULT_SPEED);
     if (qp.get('pause') === '1') { clock.playing = false; clock._rate = 0; }
 
+    /* 同机位 A/B 对比的 URL：
+     *   ?ab=A     按 day/hour 渲染 A 帧（与不带参数一致，只是语义化，便于成对截图）
+     *   ?ab=B     同一套相机参数，时间改取 bday/bhour（缺省回落到 day/hour）
+     *   ?ab=split 进页面先按 A 抓帧，再切到 B 并开分屏
+     * 两种模式共用同一组 tx/tz/ty/r/phi/theta，所以"机位一致"由参数结构保证。 */
+    const abMode = qp.get('ab');
+    const bDay = Number(qp.get('bday'));
+    const bHour = Number(qp.get('bhour'));
+    const abBTime = ((Number.isFinite(bDay) && bDay > 0 ? bDay : day) - 1) * 24
+      + (Number.isFinite(bHour) && bHour >= 0 ? bHour : hh);
+    if (abMode === 'B') clock.hour = abBTime;
+
     // 首帧必须把阴影烘出来（贴图尺寸由画质档决定，等 world 建好后才能设）
     applyQuality(qualityKey, { persist: false });
     renderer.shadowMap.needsUpdate = true;
@@ -419,6 +549,8 @@ async function boot() {
       clock._rate = 0;
       UI.syncPlayBtn(clock);
     });
+    // 气象数据面板：全年气温/降水曲线，游标与时间轴双向同步（Canvas 2D 自绘）
+    initClimateChart(climate, clock);
     tour = new Tour({
       camera, rig, world,
       layer: document.getElementById('tourLayer'),
@@ -435,13 +567,19 @@ async function boot() {
       if (tour.active) { tour.stop(); return; }
       // 与第一人称互斥：先退出来再巡游
       if (rig.isWalk) { rig.exitWalk(); UI.setMode('orbit'); }
+      if (world?.teach && (world.teach.labels || world.teach.section)) {
+        world.teach.closeAll();
+        syncTeachBtns();
+        UI.setHint('已退出标注 / 剖面视图：与自动巡游不兼容');
+      }
       tour.start();
     });
 
     UI.setMode('orbit');
-    animate();
 
-    // 调试用：?tx=&tz=&r=&phi= 直接把相机对准某个位置
+    /* 调试用：?tx=&tz=&r=&phi= 直接把相机对准某个位置。
+     * 必须在 animate() 之前设好：对比模式（ab）会把相机锁住、不再跑 rig.update，
+     * 若机位在首帧之后才设，锁定时相机还停在开场半径 300 的位置，抓出来的 A 是错的。 */
     if (qp.has('tx')) {
       const tx = Number(qp.get('tx')) || 0;
       const tz = Number(qp.get('tz')) || 0;
@@ -453,11 +591,26 @@ async function boot() {
       rig.radius = rig.radiusGoal = r;
       rig.theta = rig.thetaGoal = Number(qp.get('theta')) || 0;
       rig.phi = rig.phiGoal = phi;
+      rig.update(0);          // 先把相机推到该机位，首帧就是最终构图
     }
+
+    /* 同机位对比：A 帧是抓下来的位图，开启期间把相机锁住（animate 里跳过 rig/tour）。
+     * 进入时若正在巡游，先停下，否则镜头会继续走、A 立刻失效。 */
+    ab = new Compare({
+      renderer, camera,
+      onState: (on) => {
+        if (on && tour && tour.active) tour.stop();
+        if (on) UI.hideCard();
+      },
+    });
+    if (abMode === 'split') { abBoot = 1; abBootAt = performance.now(); abBTimePending = abBTime; }
+
+    animate();
 
     UI.hideLoader();
 
-    window.__app = { world, rig, scene, camera, renderer, UI, objectById, climate, clock, tour,
+    window.__app = { world, rig, scene, camera, renderer, UI, objectById, climate, clock, tour, ab,
+    chartRedraws: climateChartRedraws,   // 气象面板可见层重绘计数（验收「重绘按需」用）
       getRenderScale: () => renderScale, applyRenderScale, applyQuality,
       // 画质档位的真实运行态（自证/排查用）
       getQuality: () => ({
@@ -487,12 +640,68 @@ async function boot() {
           out.push(`speed       ${clock.secondsPerDay}s/day  rate ${clock.rate.toFixed(3)} h/s`);
           out.push(`renderScale ${renderScale.toFixed(2)}  shadows ${renderer.shadowMap.autoUpdate ? '每帧' : '按需'}`);
           out.push(`temp/cloud  ${window.__wx?.temp.toFixed(1)}℃ / ${Math.round(window.__wx?.cloud)}%`);
+          // 吹向的方位角：世界 +x 东、+z 南 → 方位角 = atan2(东分量, 北分量) = atan2(x, -z)
+          out.push(`wind        ${window.__wx?.windSpeed.toFixed(2)} m/s  来向 ${Math.round(window.__wx?.windFromDeg)}°  吹向 ${Math.round((Math.atan2(window.__wx?.windX, -window.__wx?.windZ) * 180 / Math.PI + 360) % 360)}°`);
+          out.push(`smoke       ${world.smoke.lit}/${world.chimneys.length} 户生火  ${world.smoke.count} 粒  已飘 ${world.smoke.uniforms?.uTime.value.toFixed(1)}s`);
+          out.push(`routine     ${routineLabel(window.__wx?.hourOfDay ?? 0)}  窗灯 ${lightLevel(window.__wx?.hourOfDay ?? 0).toFixed(2)}  家畜活动 ${herdActivity(window.__wx?.hourOfDay ?? 0).toFixed(2)}`);
+          // 家畜微动作：17 只（牛 4 / 羊 6 / 鸡 6 / 看门狗 1）、雨雪避檐目标与平滑因子
+          {
+            const ls = world.livestock;
+            out.push(`animals     17 头 牛4 羊6 鸡6 狗1  避檐 wet=${ls.wet.toFixed(0)} k=${ls.wetK.toFixed(2)}`);
+          }
+          // 教学视图：标注 / 剖面开关状态与被裁剪材质数
+          {
+            const tc = world.teach;
+            out.push(`teach       标注 ${tc.labels ? '开' : '关'} · 剖面 ${tc.section ? '开' : '关'} · 裁剪材质 ${tc.clippedMats} 个`);
+          }
+          // 旱作元素：地膜条带（按 g 播种铺/出苗揭）、菜园木栅栏、合并田埂
+          {
+            const fm = world.farm;
+            out.push(`farm        地膜 ${fm.filmTotal} 条（白 ${fm.filmWhite}/黑 ${fm.filmTotal - fm.filmWhite}）· 篱笆 ${Math.round(fm.fenceLength)} m · 田埂/篱笆各 1 Mesh`);
+          }
+          out.push(`compare     ${ab && ab.active ? '开' : '关'}  split ${ab ? Math.round(ab.split) : 0}%  A ${ab && ab.ready ? '已缓存' : '未缓存'}  矩阵差 ${ab ? ab.matrixDiff : '-'}`);
+          // 生产性空间：16 个可点物件 / 6 处共享场院 / 4 个合批 Mesh
+          out.push(`production  ${world.production.length} 个 / ${new Set(world.production.filter((p) => p.yardId).map((p) => p.yardId)).size} 处场院 / ${world.productionMeshes.length} 组合批 Mesh`);
+          // 公共核心：4 处新建 + F-02 村委会原址升级 = 5 处公共场所 / 5 个合批 Mesh
+          out.push(`civic       ${world.civic.length} 处新建 / ${world.civic.length + 1} 处公共场所 / ${world.civicMeshes.length} 组合批 Mesh`);
+          // 地形三层材质：草/土/石的世界周期（m）与当前档位的远景淡出距离
+          {
+            const L = world.terrainLayers, tu2 = world.terrainMat?.userData?.terrainUniforms;
+            out.push(`terrain     3 层 草 ${L.grassTile.toFixed(2)}m / 土 ${L.soilTile.toFixed(2)}m / 石 ${L.rockTile.toFixed(2)}m  远景 ${tu2 ? tu2.uTerrLodNear.value + '~' + tu2.uTerrLodFar.value + 'm 退回单层' : '-'}`);
+          }
+          // 道路三类路面：全部推进同一个 Mesh，draw call 恒为 1（改前主路 1 + 巷道 5 = 6）
+          {
+            const rs = world.roadStats;
+            out.push(`roads       3 类 ${rs.main} 主路 / ${rs.lane} 巷 / ${rs.ridge} 田埂  ${world.roadVerts} 顶点 / 1 合批 Mesh  draw call 1`);
+          }
+          // 树木四种形态：棵数 / 各形态计数 / 干枝叶实例数（draw call 恒为 3 组）
+          {
+            const ts = world.treeStats;
+            if (ts) {
+              const f = ts.forms, k = ts.kinds;
+              out.push(`trees       ${ts.count} 棵  杨 ${k['杨树']} 柳 ${k['柳树']} 槐 ${k['槐树']} 杏 ${k['杏树']} 榆 ${k['榆树']}  `
+                + `4 形态 杨 ${f.poplar} 柳 ${f.willow} 槐+杏 ${f.locust} 榆 ${f.elm}  `
+                + `干 ${ts.trunk} / 枝 ${ts.branch} / 叶 ${ts.leaf}  柳垂枝 ${ts.willowSegs} 段  ${ts.meshes} 组实例`);
+            }
+          }
+          // 野性层：灌木 + 杂草两级实例，draw call 恒为 2，远处按距离淡出
+          {
+            const sc = world.scrub;
+            if (sc) {
+              out.push(`scrub       灌木 ${sc.count} / 杂草 ${sc.weedCount}  ${sc.meshes} 组实例  `
+                + `淡出 灌木 ${sc.fade.shrub[0]}~${sc.fade.shrub[1]}m · 杂草 ${sc.fade.weed[0]}~${sc.fade.weed[1]}m`);
+            }
+          }
           out.push(`cover       ${world.skyUniforms.uCoverage.value.toFixed(2)}`);
           out.push(`sunPower    ${world.sun.intensity.toFixed(2)}`);
           out.push(`fog         ${scene.fog ? scene.fog.density.toFixed(5) : 'NULL'}`);
           out.push(`green uni   ${world.seasonUniform?.value?.toFixed(3)}  wx.green ${window.__wx?.green?.toFixed(3)}`);
           out.push(`sky cover   ${world.skyUniforms.uCoverage.value.toFixed(2)}`);
-          out.push(`crops       ${world.getCropCount()}  groundY ${world.cropMesh ? world.cropMesh.count : '-'}`);
+          {
+            const st = world.fieldState.reduce((o, s) => (o[s.stage] = (o[s.stage] || 0) + 1, o), {});
+            out.push(`crops       ${world.getCropCount()} 株 / ${world.cropMeshes.length} 族 / 状态 ${JSON.stringify(st)}`);
+            out.push(`phenology   GDD ${(window.__wx?.gdd ?? 0).toFixed(0)}℃·d  ${world.fieldState.slice(0, 4).map((s) => `${s.id} ${s.crop} g=${s.g.toFixed(2)}`).join(' / ')}`);
+          }
           if (world.cropMesh) {
             const cm = world.cropMesh.material;
             const img = cm.map?.image;
@@ -510,7 +719,7 @@ async function boot() {
 
           const proxy = world.pickables[20];
           const obj = objectById.get(proxy.userData.objectId);
-          UI.showCard(obj);
+          UI.showCard(liveField(obj));
           const card = document.getElementById('card');
           out.push(`card        ${card.classList.contains('open')} / ${card.querySelectorAll('.row').length} 行`);
           UI.hideCard();

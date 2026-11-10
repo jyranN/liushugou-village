@@ -17,6 +17,17 @@ const MERIDIAN = 120;           // 东八区标准经线
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 
+/**
+ * 角度插值：走最短弧。
+ * 风向从 350° 变到 10° 时，实际只转了 20°，线性插值会倒着绕 340° 一圈；
+ * 实测这份数据里相邻小时最大跳变 180°，不处理的话拖时间轴会看到旗子原地乱甩。
+ * 返回值归一到 [0,360)。
+ */
+const lerpAngle = (a, b, t) => {
+  const d = ((b - a + 540) % 360) - 180;   // -180 .. +180
+  return (((a + d * t) % 360) + 360) % 360;
+};
+
 /** 速度档位：数值 = 走完一天需要的现实秒数 */
 export const SPEEDS = [
   { label: '6分', secondsPerDay: 360 },
@@ -33,6 +44,45 @@ export class Climate {
     this.n = raw.hourly.time.length;
     this.dayCount = raw.daily.time.length;
     this.epoch = new Date(`${YEAR_START}:00+08:00`).getTime();
+
+    /* ---------- 有效积温（GDD） ----------
+     * 单位：℃·d（度·日）。基温 5℃，即当日均温高于 5℃ 的部分才计入生长。
+     * 8760 条逐小时温度在这里一次性预计算成 365 项逐日累积值，
+     * 之后每帧只做一次线性插值 —— 时间轴可以随意拖，不需要逐帧累加。
+     *
+     * 实测岷县 2025（基温 5℃）：全年累积 1885 ℃·d；
+     *   3/15 → 7/10 = 757（春小麦全生育期）
+     *   4/15 → 8/1  = 998（马铃薯）
+     *   4/15 → 10/1 = 1631（当归移栽到采收）
+     * 作物物候与草地返青都用这一份数据，是同源的唯一时钟。
+     */
+    this.gddDaily = new Float32Array(365);
+    {
+      const T = this.hourly.temperature_2m;
+      let acc = 0;
+      for (let d = 0; d < 365; d++) {
+        let s = 0;
+        for (let h = 0; h < 24; h++) s += Math.max(0, (T[d * 24 + h] ?? 0) - 5) / 24;
+        acc += s;
+        this.gddDaily[d] = acc;
+      }
+      this.gddYear = acc;
+    }
+  }
+
+  /**
+   * 取某日序（可带小数）的累积有效积温，单位 ℃·d。
+   * dayOfYear 会先按 365 取模，所以时间轴跨年回卷时不会越界：
+   * 第 364 天到第 0 天之间线性插值，正好是从全年累积落回 0，
+   * 也就是「新的一年重新开始积温」，作物随之回到休耕。
+   */
+  gddAt(dayOfYear) {
+    const d = ((dayOfYear % 365) + 365) % 365;
+    const i = Math.floor(d);
+    const f = d - i;
+    const a = this.gddDaily[i];
+    const b = i >= 364 ? 0 : this.gddDaily[i + 1];
+    return a + (b - a) * f;
   }
 
   static async load(url = './data/minxian-2025-raw.json') {
@@ -59,6 +109,8 @@ export class Climate {
       cloud: h.cloud_cover[i] ?? 50,
       code: h.weather_code[i] ?? 0,
       wind: h.wind_speed_10m[i] ?? 0,
+      // 气象来向（0=北，顺时针；270=西风）。见 tools/fetch-wind-direction.mjs
+      windDir: h.wind_direction_10m[i] ?? 0,
       snow: h.snowfall[i] ?? 0,
       isDay: (h.is_day[i] ?? 1) === 1,
       dayOfYear: Math.floor(i / 24),
@@ -79,10 +131,37 @@ export class Climate {
       precip: lerp(a.precip, b.precip, f),
       cloud: lerp(a.cloud, b.cloud, f),
       wind: lerp(a.wind, b.wind, f),
+      windDir: lerpAngle(a.windDir, b.windDir, f),
       // 昼夜与物候也跟着连续推进，否则午夜会硬切一次
       dayOfYear: (((base % this.n) + this.n) % this.n) / 24 + f / 24,
       hourOfDay: (((hour % 24) + 24) % 24),
       isDay: f < 0.5 ? a.isDay : b.isDay,
+    };
+  }
+
+  /**
+   * 风场：全项目唯一的取风入口。旗面、草、作物、雨丝、雪片都从这一处取，
+   * 所以「三处方向一致」是结构上保证的，不是靠各处凑巧算对。
+   *
+   * 口径与单位：
+   *   speed     m/s。原始记录单位是 km/h，在此统一换算，消费方不要再转。
+   *   fromDeg   气象来向，0=北、90=东、180=南、270=西（与数据源定义一致）。
+   *   dirX/dirZ 世界坐标单位向量，指向「风吹去」的方向。
+   *             世界坐标与 sunVector 同一套：+x 东、+z 南、+y 天顶。
+   *             来向 θ 自北顺时针 → 风吹向 = -来向，换成 x/z 即 dirX=-sinθ、dirZ=+cosθ。
+   *             自检：θ=270（西风）→ dirX=+1，吹向东；θ=0（北风）→ dirZ=+1，吹向南。
+   *
+   * 这里只做「取值 + 整点环状插值」，不平滑。平滑放在 environment.js：
+   * 它依赖真实经过时间与帧率，属于渲染状态，不属于气候数据。
+   */
+  windAt(hour) {
+    const s = this.sample(hour);
+    const rad = s.windDir * DEG;
+    return {
+      speed: s.wind / 3.6,
+      fromDeg: s.windDir,
+      dirX: -Math.sin(rad),
+      dirZ: Math.cos(rad),
     };
   }
 

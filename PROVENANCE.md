@@ -62,6 +62,12 @@
 
 完整清单见 `THIRD_PARTY_NOTICES.md`；本项目自有代码许可见 `LICENSE`（MIT）。
 
+> **v1.2 补充取数**：原始数据包只取了 8 个变量，没有风向。`wind_direction_10m` 由
+> `tools/fetch-wind-direction.mjs` 用**与原始数据同一条 Open-Meteo 查询**
+> （同坐标、同日期区间、同时区、同 `models=best_match`）补取 2025 全年 8760 条，
+> 并校验同次返回的风速与工程内已有风速逐值一致（最大差 0.000 km/h）后才写入。
+> 数据源、许可与署名义务不变，仍为 Open-Meteo · CC BY 4.0。
+
 ---
 
 ## 五、已知边界

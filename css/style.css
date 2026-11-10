@@ -154,6 +154,72 @@ body.touring #joystick,
 body.touring #crosshair { opacity: 0; }
 body.touring #modebar { opacity: 0.35; }
 
+/* ---------------- 同机位 A/B 对比 ----------------
+ * A 帧是一张缓存的位图，覆盖层用 overflow:hidden 按 --ab-split 裁切，
+ * 分割线跟着走。两者都不接指针事件，不会挡住拖拽和点选。 */
+#abLayer, #abDivider { display: none; }
+#abLayer {
+  position: fixed; top: 0; bottom: 0; left: 0;
+  width: var(--ab-split, 50%);
+  overflow: hidden;
+  z-index: 5;
+  pointer-events: none;
+}
+#abLayer canvas { display: block; width: 100vw; height: 100vh; }
+#abDivider {
+  position: fixed; top: 0; bottom: 0; left: var(--ab-split, 50%);
+  width: 1px; margin-left: -0.5px;
+  background: rgba(127, 227, 192, 0.6);
+  box-shadow: 0 0 10px rgba(127, 227, 192, 0.45);
+  z-index: 6; pointer-events: none;
+}
+body.comparing #abLayer, body.comparing #abDivider { display: block; }
+
+#abBtn.on {
+  color: #0b1512; background: var(--accent);
+  border-color: var(--accent); font-weight: 600;
+}
+
+#abPanel {
+  position: absolute; left: 50%; bottom: 118px;
+  transform: translateX(-50%) translateY(8px);
+  width: min(520px, 74vw);
+  padding: 12px 16px;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+  z-index: 12;
+}
+body.comparing #abPanel {
+  opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto;
+}
+.ab-head { display: flex; align-items: center; gap: 10px; }
+.ab-head span {
+  font-size: 11px; letter-spacing: 0.1em; color: var(--txt3);
+  font-family: "SF Mono", Menlo, monospace;
+}
+.ab-head input {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 3px; border-radius: 2px; background: var(--line-strong);
+  outline: none; cursor: pointer;
+}
+.ab-head input::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(127, 227, 192, 0.5);
+  cursor: pointer;
+}
+.ab-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ab-foot em {
+  flex: 1; font-style: normal; font-size: 11px; line-height: 1.5;
+  color: var(--txt3); letter-spacing: 0.03em;
+}
+.ab-foot button { padding: 5px 10px; font-size: 11px; }
+
 /* ---------------- 摇杆 ---------------- */
 #joystick {
   position: absolute; left: 40px; bottom: 44px;
@@ -262,6 +328,29 @@ body.touring #modebar { opacity: 0.35; }
   background: rgba(127, 227, 192, 0.055);
   border-left: 2px solid rgba(127, 227, 192, 0.4);
   border-radius: 0 4px 4px 0;
+}
+
+/* 分组字段（住户与经营）：
+ * 桌面端与上面的行同款平铺、折叠条隐藏；窄屏收进 <details>，点标题展开。
+ * 断点 900px 与 js/ui.js 里 matchMedia 的判断保持一致。 */
+.card-group { margin: 0; }
+.card-group > summary { display: none; }
+
+@media (max-width: 900px) {
+  #card { width: min(372px, 88vw); padding: 22px 20px 26px; }
+  .card-group > summary {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0 11px; margin-top: 2px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+    font-size: 12.5px; letter-spacing: 0.04em; color: var(--txt2);
+    cursor: pointer; list-style: none;
+  }
+  .card-group > summary::-webkit-details-marker { display: none; }
+  .card-group > summary::after {
+    content: "⌄"; font-size: 13px; line-height: 1; color: var(--txt3);
+    transition: transform 0.2s;
+  }
+  .card-group[open] > summary::after { transform: rotate(180deg); }
 }
 
 /* ---------------- 载入 ---------------- */
@@ -399,4 +488,45 @@ body.walking #scene { cursor: default; }
   background: var(--accent);
   border-color: var(--accent);
   font-weight: 600;
+}
+
+/* ---------- 气象数据面板（Canvas 2D 自绘，js/climate-chart.js） ---------- */
+#wxChartBtn.on {
+  color: #0c1214;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+#wxPanel {
+  position: absolute; right: 16px; top: 64px;
+  width: min(384px, 86vw);
+  padding: 12px 14px 10px;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  opacity: 0; pointer-events: none;
+  transform: translateX(14px);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+  z-index: 12;
+}
+#wxPanel.open { opacity: 1; transform: none; pointer-events: auto; }
+#wxPanel .wxp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+#wxPanel .wxp-head em {
+  font-style: normal; font-size: 11.5px; letter-spacing: 0.06em;
+  color: var(--txt2);
+}
+#wxCanvas {
+  display: block; width: 100%; height: 190px;
+  border-radius: 6px;
+  background: rgba(8, 14, 16, 0.5);
+  cursor: crosshair;
+  touch-action: none;
+}
+#wxPanel .wxp-foot {
+  margin: 8px 0 0;
+  font-size: 10.5px; line-height: 1.5; color: var(--txt2); opacity: 0.8;
 }

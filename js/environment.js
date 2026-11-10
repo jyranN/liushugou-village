@@ -1,10 +1,13 @@
 /**
  * 环境驱动：把真实气象数据翻译成场景参数
- * 数据 → 太阳位置/强度/色温、天空色、云量、雾、曝光
+ * 数据 → 太阳位置/强度/色温、天空色、云量、雾、曝光、风场
  *
  * 全部输入都是连续的（太阳用天文公式逐帧解算），
  * 所以日出日落是一条平滑的曲线，不是逐小时跳一格。
  */
+
+// 作息表：窗灯只在「天黑 + 家里还醒着」时亮，与炊烟、家畜读同一张表
+import { lightLevel } from './schedule.js';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const mix = (a, b, t) => a + (b - a) * t;
@@ -26,7 +29,7 @@ function blend(a, b, t) {
   return [mix(a[0], b[0], t), mix(a[1], b[1], t), mix(a[2], b[2], t)];
 }
 
-export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6) {
+export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6, dt = 1 / 60) {
   const scene = ctx.scene || ctx.root?.parent;
   const s = climate.sample(hour);
   const sunInfo = climate.sunAt(hour);
@@ -106,6 +109,35 @@ export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6) {
     ctx.moon.color.setRGB(0.60, 0.70, 0.95);
   }
 
+  /* ---------- 风场：风速 + 风向，三处可见效果共用 ----------
+   * climate.windAt() 给出真实来向换算出的世界坐标单位向量；这里再做一层「矢量低通」：
+   * 平滑的是 x/z 两个分量而不是角度，所以风向翻转时会先减到接近 0 再朝新方向长起来
+   * （相当于一次风停），不会出现 180° 硬翻。
+   * 时间常数 0.9 s（现实时间）：拖时间轴跨月时目标值突变，画面只跟着慢慢转过去。
+   *
+   * 单位：uWindDir 无量纲单位向量（世界 xz）；uWindSpeed 为 m/s。
+   */
+  const wf = climate.windAt(hour);
+  const WIND_TAU = 0.9;                     // 秒，矢量低通时间常数
+  const kWind = 1 - Math.exp(-clamp(dt, 0, 0.25) / WIND_TAU);
+  if (!ctx.__wind) {
+    // 首帧直接落在目标上：否则开场旗子会从「无风」慢慢涨起来
+    ctx.__wind = { x: wf.dirX * wf.speed, z: wf.dirZ * wf.speed, nx: wf.dirX, nz: wf.dirZ };
+  }
+  const wv = ctx.__wind;
+  wv.x += (wf.dirX * wf.speed - wv.x) * kWind;
+  wv.z += (wf.dirZ * wf.speed - wv.z) * kWind;
+
+  const windSpeed = Math.hypot(wv.x, wv.z);
+  // 低于阈值时保留上一次的方向：静风时两个分量都趋零，归一化会抖成随机方向
+  if (windSpeed > 1e-4) { wv.nx = wv.x / windSpeed; wv.nz = wv.z / windSpeed; }
+  const windX = wv.nx, windZ = wv.nz;
+
+  if (ctx.windUniforms) {
+    ctx.windUniforms.uWindDir.value.set(windX, windZ);
+    ctx.windUniforms.uWindSpeed.value = windSpeed;
+  }
+
   /* ---------- 雾：湿度高 / 有降水时更浓 ---------- */
   const humidFog = clamp((s.humi - 78) / 22, 0, 1);
   // 基础雾不可为 0：没有空气散射，画面会显得又平又薄。
@@ -117,9 +149,16 @@ export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6) {
     scene.fog.color.setRGB(bot[0], bot[1], bot[2]);
   }
 
-  /* ---------- 物候：返青 → 盛绿 → 枯黄 ---------- */
+  /* ---------- 物候：返青 → 盛绿 → 枯黄 ----------
+   * 返青段改由**有效积温**驱动，与田里的作物读同一份 GDD（climate.gddAt），
+   * 所以「草绿了」和「作物出苗」在同一条温度时钟上，不会出现作物长起来而草地还黄着。
+   * 阈值 (0, 175) 是按 2025 实测标定的：日序 105（4/15）积温 93，
+   * 原日序公式给 0.575，新公式给 0.567，草地观感基本不变。
+   * 秋季枯黄仍看日序 —— 落叶是短日照 + 降温共同作用，不是积温过高。
+   */
   const doy = s.dayOfYear;
-  const green = clamp(smoothstep(72, 132, doy) * (1 - smoothstep(282, 328, doy)), 0, 1);
+  const gdd = climate ? climate.gddAt(doy) : 0;
+  const green = clamp(smoothstep(0, 175, gdd) * (1 - smoothstep(282, 328, doy)), 0, 1);
   if (ctx.seasonUniform) ctx.seasonUniform.value = green;
 
   /* ---------- 曝光 ---------- */
@@ -182,7 +221,9 @@ export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6) {
   if (ctx.lampLights) for (const l of ctx.lampLights) l.intensity = lampF * 26;
   if (ctx.glassMat) {
     ctx.glassMat.emissive.setRGB(1.0, 0.68, 0.38);
-    ctx.glassMat.emissiveIntensity = lampF * 1.5;
+    // 窗灯 = 路灯那套「天黑」 × 作息表的「还醒着」。路灯是光控，窗灯是人控：
+    // 23 点后全村陆续熄灯，凌晨窗外不再整片亮着（v1.1 是亮到天亮）。
+    ctx.glassMat.emissiveIntensity = lampF * lightLevel(s.hourOfDay) * 1.5;
   }
 
   return {
@@ -193,17 +234,25 @@ export function updateEnvironment(ctx, climate, hour, renderer, cameraY = 6) {
     cloud: s.cloud,
     precip: s.precip,
     snow: s.snow,
-    wind: s.wind,
+    wind: s.wind,              // km/h，沿用旧口径（数据原单位）
+    windSpeed,                 // m/s，平滑后的实况风矢量模长
+    windX, windZ,              // 世界坐标单位向量，指向风吹去的方向
+    windFromDeg: wf.fromDeg,    // 气象来向（0=北，顺时针）
     code: s.code,
     isDay: sinAlt > 0,
     sunAlt: sinAlt,
     sunElevation: sunInfo.elevation,
     green,
+    gdd,                       // 当前累积有效积温，℃·d（与作物、草地同一份）
     doy,
     isSnow,
     snowCover,
     wet,
     rainRate: isSnow ? 0 : s.precip,
     snowRate: isSnow ? Math.max(s.snow, s.precip * 0.12) : 0,
+    // 供炊烟用：dayF 是 0..1 的"白昼程度"（夜里烟转暗）；
+    // viewHeightPx 是绘制缓冲的物理像素高（含像素比），用来把烟团的米数换算成像素
+    dayF,
+    viewHeightPx: renderer.domElement.height,
   };
 }
